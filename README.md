@@ -9,8 +9,6 @@
 > makes nor supports it. Please report problems with Layerfold [here](https://github.com/mrbassvilleport/layerfold/issues),
 > not to them. The official project is [storytold/effectcraft](https://github.com/storytold/effectcraft).
 
-Русское описание ниже: [перейти](#по-русски).
-
 ## What it adds
 
 Layerfold is EffectCraft 0.21.0 with changes to how the timeline works. Compositions, the 308 effects, 3D,
@@ -129,23 +127,3 @@ listed with their authors and licenses in [ATTRIBUTION.md](ATTRIBUTION.md).
 Layerfold is based on EffectCraft by the ArtCraft team and the EffectCraft contributors, whose
 commit history is kept in this repository. The ArtCraft name and logos are their trademarks. They
 are not covered by this license, and the logos were removed from this version as their terms require.
-
-## По-русски
-
-Layerfold — редактор моушн-графики и композиции для Windows на основе
-[EffectCraft](https://github.com/storytold/effectcraft). Это независимый проект: команда ArtCraft его
-не делает и не поддерживает, поэтому об ошибках пишите [сюда](https://github.com/mrbassvilleport/layerfold/issues).
-
-От EffectCraft 0.21.0 он отличается работой таймлайна. Анимации выше показывают по порядку:
-
-- вложенные группы слоёв с общими Video, Audio и Lock и полосой, которая показывает, где лежат их слои;
-- Alt + перетаскивание: клип и его ключи стоят на месте, а внутри сдвигается видео;
-- привязку с Shift к указателю времени, краям слоёв, ключам и краям групп;
-- края клипа, которые останавливаются на начале и конце видео;
-- кадры видео на дорожках, которые можно выключить;
-- панорамирование таймлайна средней кнопкой мыши.
-
-Полный список на английском: [CHANGES.md](CHANGES.md). Интерфейс определяет русский язык по системе, но перевод неполный.
-
-Проект молодой и проверяется на одном компьютере, для работы на заказ пока не советую. Большая часть
-кода написана с помощью ИИ-ассистентов. Сборка описана [выше](#building).

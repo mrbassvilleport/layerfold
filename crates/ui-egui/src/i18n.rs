@@ -89,7 +89,7 @@ fn system_language() -> &'static str {
     {
         static LANGUAGE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         // EFFECTCRAFT_SYSTEM_LOCALE stands in for the OS locale: the test suite expects English
-        // labels, and editor/scripts/cargo.ps1 sets it to `en` for test runs on a Russian Windows.
+        // labels, and editor/scripts/cargo.ps1 sets it to `en` for test runs on a non-English Windows.
         LANGUAGE.get_or_init(|| supported(std::env::var("EFFECTCRAFT_SYSTEM_LOCALE").ok().or_else(sys_locale::get_locale).as_deref()))
     }
     #[cfg(target_arch = "wasm32")]

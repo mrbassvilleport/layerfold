@@ -145,7 +145,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     // A deselected layer never keeps an open text edit (#2226): the copies take the selection, so
-    // commit an open edit first, exactly as `text.endEdit` and Deselect All do вЂ” one call on the
+    // commit an open edit first, exactly as `text.endEdit` and Deselect All do: one call on the
     // command path so every route (menu, shortcut, palette, MCP, script) ends the edit and leaves
     // the same final state. Unnamed, the target is the edited layer even when an engine route
     // selected another one meanwhile.

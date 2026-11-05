@@ -86,7 +86,7 @@ a script can still write and read files through other commands, even with its pe
 
 ## Added files
 
-- `editor/` holds our build scripts, installer and demo filming, some of them in Russian.
+- `editor/` holds our build scripts, installer and demo filming.
 - `docs/images/demo/` holds the animations in the README. `editor/scripts/demo/` films them from
   synthetic clips with the `snapshot` example, which gained step-by-step pointer gestures for this.
 
@@ -98,6 +98,6 @@ a script can still write and read files through other commands, even with its pe
 - All expressions share one JavaScript environment (from `crates/expr`). An expression that deliberately
   redefines a shared function can get around the locked group check. The result is an allowed delete,
   which Undo reverses.
-- The interface's Russian translation is incomplete.
+- Interface translations are incomplete.
 - Building the MSI needs a licence bundle in `editor/output/share-windows/`, which isn't in this
   repository and no script here creates. The program itself builds without it.

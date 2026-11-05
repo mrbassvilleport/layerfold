@@ -1,13 +1,13 @@
-Layerfold {VERSION}, Windows x64 (установленная версия)
+Layerfold {VERSION}, Windows x64 (installed version)
 
-Установлена установщиком Layerfold-{VERSION}-windows-x64.msi.
-Запуск: меню «Пуск» или ярлык Layerfold. Файлы .ecproj открываются двойным щелчком.
-effectcraft-cli.exe из этой папки доступен в PATH: например, effectcraft-cli mcp для агентов.
-Новая версия ставится поверх: запустите новый MSI. Удаление: Параметры → Приложения.
-Настройки хранятся в %APPDATA%\Layerfold, кэш — в %LOCALAPPDATA%\Layerfold; удаление их не трогает.
-Сборка без цифровой подписи: Windows может показать неизвестного издателя.
+Installed by Layerfold-{VERSION}-windows-x64.msi.
+To start it, use the Start menu or the Layerfold shortcut. Double-clicking an .ecproj file opens it.
+effectcraft-cli.exe in this folder is on PATH: for example, effectcraft-cli mcp for agents.
+To update, run the new MSI over this version. To uninstall, use Settings > Apps.
+Settings are in %APPDATA%\Layerfold and the cache is in %LOCALAPPDATA%\Layerfold; uninstalling leaves them in place.
+This build has no digital signature, so Windows may show an unknown publisher.
 
-Это самостоятельная тестовая сборка на основе EffectCraft by the ArtCraft team.
-Она содержит наши доработки и не является официальной сборкой исходного проекта.
-Лицензии, уведомления и исходные архивы находятся в этой папке: licenses, sources, NOTICE.
-Для GPU нужен совместимый графический драйвер.
+This is an independent test build based on EffectCraft by the ArtCraft team.
+It contains our changes and is not an official build of the original project.
+Licenses, notices and source archives are in this folder: licenses, sources, NOTICE.
+The GPU needs a compatible graphics driver.
