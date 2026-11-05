@@ -40,7 +40,7 @@ fn demo_layer_cache_is_transparent() {
     }
     assert!(s.layer_cache.stats().hits > 0);
     // Edit the title's glow through the command layer, then scrub again.
-    let title = s.project.comp(cid).unwrap().layers.iter().find(|l| l.name == "EFFECTCRAFT").map(|l| l.id.0).unwrap();
+    let title = s.project.comp(cid).unwrap().layers.iter().find(|l| l.name == "LAYERFOLD").map(|l| l.id.0).unwrap();
     s.execute("prop.set", json!({"layer": title, "path": "effects/#1/radius", "value": 5.0})).unwrap();
     for t in [3.0, 0.5] {
         check(&s, t);
@@ -491,10 +491,25 @@ fn save_and_open_roundtrip() {
 #[test]
 fn help_links_emit_urls() {
     let mut s = Session::default();
-    let r = s.execute("help.discord", json!({})).unwrap();
-    assert_eq!(r["url"], "https://discord.gg/artcraft");
-    assert!(s.drain_events().iter().any(|e| matches!(e, crate::Event::OpenUrl(u) if u.contains("discord"))));
-    assert_eq!(s.execute("help.github", json!({})).unwrap()["url"], "https://github.com/storytold/effectcraft");
+    let r = s.execute("help.upstream", json!({})).unwrap();
+    assert_eq!(r["url"], "https://github.com/storytold/effectcraft");
+    assert!(s.drain_events().iter().any(|e| matches!(e, crate::Event::OpenUrl(u) if u.contains("storytold"))));
+    for gone in ["help.discord", "help.website", "help.appPage", "help.onlineTutorials", "help.sibling"] {
+        assert!(s.execute(gone, json!({})).is_err(), "{gone} still runs");
+    }
+    assert_eq!(s.execute("help.github", json!({})).unwrap()["url"], "https://github.com/mrbassvilleport/layerfold");
+}
+
+/// A modified build must not look supported by the upstream team: Help keeps only the plain
+/// link to the original source, the community, website and feedback entries are gone.
+#[test]
+fn help_menu_has_no_upstream_support_entries() {
+    let entries = crate::menus::entries();
+    let help: Vec<&str> = entries.iter().filter(|(p, _)| p.first().map(String::as_str) == Some("Help")).map(|(_, e)| e.command.as_str()).collect();
+    for cmd in ["help.discord", "help.website", "help.appPage", "help.onlineTutorials", "help.reportIssue"] {
+        assert!(!help.contains(&cmd), "{cmd} is still in Help");
+    }
+    assert!(help.contains(&"help.github"));
 }
 
 /// Every Help ▸ documentation page opens a file that is in the repository (#2696: Expression Reference opened a 404).
@@ -505,7 +520,7 @@ fn help_docs_pages_exist_in_the_repository() {
         let mut s = Session::default();
         let params = page.map_or_else(|| json!({}), |p| json!({"page": p}));
         let url = s.execute("help.docs", params).unwrap()["url"].as_str().unwrap().to_owned();
-        let path = url.strip_prefix("https://github.com/storytold/effectcraft/blob/main/").unwrap_or_else(|| panic!("{page:?}: {url}"));
+        let path = url.strip_prefix("https://github.com/mrbassvilleport/layerfold/blob/main/").unwrap_or_else(|| panic!("{page:?}: {url}"));
         assert!(root.join(path).is_file(), "{page:?} opens {url}, which is not in the repository");
     }
 }

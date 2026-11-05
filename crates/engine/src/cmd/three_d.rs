@@ -530,6 +530,7 @@ fn dolly(s: &mut Session, p: &Value) -> Result<Value> {
 /// towardsPointOfInterest (cameras and spot/parallel lights).
 fn auto_orient(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = super::layers_p(s, p)?;
+    let ids = super::group_unlocked(s, cid, ids, "layer.autoOrient")?;
     if ids.is_empty() {
         return Err(bad("layer.autoOrient", "select a layer first"));
     }

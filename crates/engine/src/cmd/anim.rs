@@ -57,7 +57,7 @@ fn compatible(a: &Property, b: &effectcraft_keyframe::Value) -> bool {
 }
 
 pub(crate) fn locked_selection(comp: &effectcraft_project::Comp, selected: &[KeyRef]) -> Vec<KeyRef> {
-    selected.iter().filter(|k| comp.layer(k.layer).is_some_and(|l| l.switches.locked)).copied().collect()
+    selected.iter().filter(|k| comp.layer(k.layer).is_some() && comp.layer_effectively_locked(k.layer)).copied().collect()
 }
 
 /// Paste copied keyframes at the current time into the target layers' properties.
@@ -81,6 +81,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
         targets = clip.iter().map(|c| c.layer).collect();
         targets.dedup();
     }
+    let targets = super::group_unlocked(s, cid, targets, "keys.paste")?;
     let explicit = p.get("prop").and_then(Value::as_u64).or_else(|| {
         let path = str_p(p, "path")?;
         comp.layer(*targets.first()?)?.props.prop(path).map(|pr| pr.uid)
@@ -94,7 +95,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     let mut plan: Vec<(LayerId, Uid, usize)> = vec![];
     for (ti, lid) in targets.iter().enumerate() {
         let Some(l) = comp.layer(*lid) else { continue };
-        if l.switches.locked {
+        if comp.layer_effectively_locked(*lid) {
             continue;
         }
         for (ci, c) in clip.iter().enumerate() {
@@ -185,7 +186,7 @@ pub(super) fn paste_path(s: &mut Session, p: &Value, (cid, lid, uid): (ItemId, L
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let t = time_p(s, p, Some(comp));
     let target = comp.layer(lid).ok_or(EngineError::NoComp)?;
-    if target.switches.locked {
+    if comp.layer_effectively_locked(target.id) {
         return Err(bad("keys.paste", "the target layer is locked"));
     }
     let mut order: Vec<usize> = (0..path.vertices.len()).collect();
@@ -266,7 +267,7 @@ fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     // Keys of locked layers can't be selected.
-    sel.retain(|k| comp.layer(k.layer).is_some_and(|l| !l.switches.locked));
+    sel.retain(|k| comp.layer(k.layer).is_some() && !comp.layer_effectively_locked(k.layer));
     s.state.selected_keys = sel;
     Ok(json!(s.state.selected_keys.len()))
 }
@@ -314,7 +315,7 @@ fn set_key(s: &mut Session, p: &Value) -> Result<Value> {
     let base = KeyTimeBase::from_params(p, "keys.set")?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
-    if layer.switches.locked {
+    if comp.layer_effectively_locked(layer.id) {
         return Err(bad("keys.set", "the layer is locked"));
     }
     let t = key_time(layer, comp.frame_rate, p, "time", base, "keys.set", false)?.ok_or_else(|| bad("keys.set", "missing `time` (layer time by default)"))?;
@@ -519,12 +520,12 @@ fn time_reverse(s: &mut Session, _: &Value) -> Result<Value> {
         }
         let mut new_sel = vec![];
         for ((lid, uid), times) in groups {
-            let Some(layer) = comp.layer_mut(lid) else { continue };
-            // A locked layer's keys stay as they are, and stay selected.
-            if layer.switches.locked {
+            // A locked layer's keys stay as they are, and stay selected; so do a locked group's.
+            if comp.layer_effectively_locked(lid) {
                 new_sel.extend(times.iter().map(|time| KeyRef { layer: lid, prop: uid, time: *time }));
                 continue;
             }
+            let Some(layer) = comp.layer_mut(lid) else { continue };
             let Some(pr) = layer.props.find_mut(uid) else { continue };
             let (mut picked, rest): (Vec<Keyframe>, Vec<Keyframe>) = pr.keys.drain(..).partition(|k| times.contains(&k.time));
             effectcraft_keyframe::time_reverse(&mut picked);

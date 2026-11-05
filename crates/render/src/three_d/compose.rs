@@ -412,6 +412,7 @@ fn matte_for(r: &Renderer, ctx: &EvalCtx, layer: &Layer, out: (u32, u32)) -> Opt
     let tm = layer.track_matte?;
     let m = ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id)?;
     let mut img = Image::new(out.0, out.1);
+    // A matte in a hidden folder still mattes, like one with its own Video off.
     if m.is_active_at(ctx.time) {
         if m.is_3d() {
             // Render the matte plane alone (its own matte is ignored).
@@ -525,7 +526,14 @@ fn gather<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Layer], out: (u32,
             .layers
             .as_arcs()
             .par_iter()
-            .filter(|l| l.switches.three_d && l.has_video() && l.is_active_at(ctx.time) && !in_run.contains(&l.id) && !l.switches.adjustment)
+            .filter(|l| {
+                l.switches.three_d
+                    && l.has_video()
+                    && ctx.comp.layer_group_video_enabled(l.id)
+                    && l.is_active_at(ctx.time)
+                    && !in_run.contains(&l.id)
+                    && !l.switches.adjustment
+            })
             .filter(|l| Material::of(ctx, l).casts_shadows != 0)
             .flat_map_iter(|l| prepare_all(r, ctx, l, 0, out, false))
             .collect();
@@ -548,7 +556,14 @@ fn collapsed_items<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &'a Layer, co
         .layers
         .iter()
         .rev()
-        .filter(|l| l.is_active_at(t) && l.has_video() && !l.switches.adjustment && (!any_solo || l.switches.solo) && (sub.opts.guides || !l.switches.guide))
+        .filter(|l| {
+            l.is_active_at(t)
+                && l.has_video()
+                && nctx.comp.layer_group_video_enabled(l.id)
+                && !l.switches.adjustment
+                && (!any_solo || l.switches.solo)
+                && (sub.opts.guides || !l.switches.guide)
+        })
         .collect();
     let mut items = Vec::new();
     for (k, l) in nested.into_iter().enumerate() {
@@ -1023,7 +1038,11 @@ pub(crate) fn environment_rotation(ctx: &EvalCtx) -> f32 {
     ctx.comp
         .layers
         .iter()
-        .find(|l| matches!(l.source, effectcraft_project::LayerSource::Light { kind: LightKind::Environment }) && l.is_active_at(ctx.time))
+        .find(|l| {
+            matches!(l.source, effectcraft_project::LayerSource::Light { kind: LightKind::Environment })
+                && l.is_active_at(ctx.time)
+                && ctx.comp.layer_effectively_visible(l.id)
+        })
         .and_then(|l| l.props.sub("lightOptions").map(|g| ctx.f(l, g, "rotation", 0.0)))
         .unwrap_or(0.0)
         .to_radians() as f32

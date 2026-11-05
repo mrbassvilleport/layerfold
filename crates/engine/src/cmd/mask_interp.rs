@@ -152,10 +152,14 @@ fn track_mask(s: &mut Session, p: &Value) -> Result<Value> {
             None => layer_p(s, p, CMD)?,
         },
     };
+    super::group_unlocked(s, cid, vec![lid], CMD)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
     let uid = mask_uid(s, layer, p).ok_or_else(|| bad(CMD, format!("layer `{}` has no such mask (select one or pass `mask`)", layer.name)))?;
-    if !layer.has_video() || matches!(layer.source, effectcraft_project::LayerSource::Text | effectcraft_project::LayerSource::Shape) {
+    if !layer.has_video()
+        || !comp.layer_group_video_enabled(lid)
+        || matches!(layer.source, effectcraft_project::LayerSource::Text | effectcraft_project::LayerSource::Shape)
+    {
         return Err(bad(CMD, "the layer has no pixels to track"));
     }
     let method = method_p(p, CMD)?.unwrap_or(s.state.mask_track_method);
@@ -232,6 +236,7 @@ fn extract_face(s: &mut Session, p: &Value) -> Result<Value> {
     use effectcraft_track::face::{LANDMARKS, MEASUREMENTS, N, face_frame, measure};
     const CMD: &str = "track.extractFaceMeasurements";
     let (cid, lid) = face_points_layer(s, p).ok_or_else(|| bad(CMD, "no Face Track Points: track a mask with Face Tracking (Detailed Features) first"))?;
+    super::group_unlocked(s, cid, vec![lid], CMD)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
     let g = layer.effects().and_then(|fx| fx.groups().find(|g| g.match_id == POINTS_ID)).ok_or_else(|| bad(CMD, "the layer has no Face Track Points"))?;
@@ -292,7 +297,7 @@ fn extract_face(s: &mut Session, p: &Value) -> Result<Value> {
     s.state.keyframe_text = None;
     s.state.clip_is_keys = true;
     // The same data as text (tab-separated, one row per frame) for other applications.
-    let mut text = String::from("EffectCraft Face Measurements\n\nFrame\tTime");
+    let mut text = String::from("Layerfold Face Measurements\n\nFrame\tTime");
     for (_, name) in MEASUREMENTS {
         text.push('\t');
         text.push_str(name);

@@ -91,9 +91,10 @@ fn speed_graph(app: &EffectcraftApp, comp: &Comp) -> bool {
     }
 }
 
-fn shown_props(app: &EffectcraftApp, comp: &Comp) -> Vec<(LayerId, u64)> {
+pub(super) fn shown_props(app: &EffectcraftApp, comp: &Comp) -> Vec<(LayerId, u64)> {
     let st = &app.session.state;
     let numeric = |pr: &Property| !pr.value.components().is_empty() && pr.value.interpolates();
+    let visible_layer = |id: LayerId| !app.ui.timeline.search.trim().is_empty() || !comp.layer_group_path(id).iter().any(|g| g.collapsed);
     // A selected keyframe counts as selecting its property and layer (as clicking a key does in
     // After Effects), so selecting a key in the Timeline shows its graph.
     let mut picked: Vec<(LayerId, u64)> = st.selected_props.clone();
@@ -103,10 +104,10 @@ fn shown_props(app: &EffectcraftApp, comp: &Comp) -> Vec<(LayerId, u64)> {
         }
     }
     if app.ui.timeline.graph_show_selected && !picked.is_empty() {
-        return picked.into_iter().filter(|(l, u)| comp.layer(*l).and_then(|l| l.props.find(*u)).is_some_and(numeric)).collect();
+        return picked.into_iter().filter(|(l, u)| visible_layer(*l) && comp.layer(*l).and_then(|l| l.props.find(*u)).is_some_and(numeric)).collect();
     }
     let mut v = vec![];
-    for l in comp.layers.iter().filter(|l| st.selected_layers.contains(&l.id) || picked.iter().any(|(pl, _)| *pl == l.id)) {
+    for l in comp.layers.iter().filter(|l| visible_layer(l.id) && (st.selected_layers.contains(&l.id) || picked.iter().any(|(pl, _)| *pl == l.id))) {
         l.props.walk("", &mut |_, pr| {
             if (pr.is_animated() || pr.has_expression()) && numeric(pr) {
                 v.push((l.id, pr.uid));
@@ -403,6 +404,28 @@ fn fit_on_open(app: &mut EffectcraftApp, ctx: &egui::Context, cs: &[Curve], tm: 
     }
 }
 
+/// Shift snapping targets the keys visible in the plot, read from the composition as it was
+/// before the drag (the curves of the live one move with the drag).
+fn publish_snap_view(app: &EffectcraftApp, ctx: &egui::Context, view: GraphView, cs: &[Curve<'_>], plot: Rect, ymap: &dyn Fn(f64) -> f32) {
+    let GraphView { comp, ectx, tm } = view;
+    let speed = speed_graph(app, comp);
+    let original = super::timeline::snap_key_comp(app, comp);
+    let original_curves = if std::ptr::eq(original, comp) { None } else { Some(curves(app, original, ectx, tm, plot, speed)) };
+    let snap_curves = original_curves.as_deref().unwrap_or(cs);
+    let mut view = super::timeline::SnapView { span: (tm.t(plot.min.x), tm.t(plot.max.x)), ..Default::default() };
+    for c in snap_curves {
+        for k in &c.keys {
+            if Rect::from_center_size(pos2(tm.x(k.t), ymap(k.v)), vec2(7.0, 7.0)).intersects(plot) {
+                view.keys.push(KeyRef { layer: c.layer.id, prop: c.prop.uid, time: k.time });
+            }
+        }
+    }
+    ctx.data_mut(|d| {
+        d.insert_temp(super::timeline::snap_view_id().with("graph"), (app.session.active_comp_id(), view.clone()));
+        d.insert_temp(super::timeline::snap_view_id(), view);
+    });
+}
+
 /// Draw the Graph Editor into `area` (the right side of the Timeline) and queue edits.
 pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, view: GraphView, area: Rect, actions: &mut Actions) {
     let GraphView { comp, ectx, tm } = view;
@@ -459,18 +482,19 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
         let pts: Vec<Pos2> = c.pts.iter().map(|(ct, v)| pos2(tm.x(*ct), ymap(*v))).collect();
         pc.add(egui::Shape::line(pts, Stroke::new(1.5, c.color)));
     }
+    publish_snap_view(app, &ctx, view, &cs, plot, &ymap);
     // Transform box around several selected keys (inside below the keys, handles above).
     let sel_keys: Vec<super::graph_tools::SelKey> = cs
         .iter()
+        .filter(|c| !comp.layer_effectively_locked(c.layer.id))
         .flat_map(|c| c.keys.iter().filter(|k| k.sel).map(move |k| super::graph_tools::SelKey { t: k.t, v: k.v, dim: c.dim, editable: c.editable }))
         .collect();
-    let all_key_times: Vec<(u64, usize, f64)> = cs.iter().flat_map(|c| c.keys.iter().map(move |k| (c.prop.uid, k.idx, k.t))).collect();
     super::graph_tools::transform_box(app, ui, &pc, &sel_keys, tm, &ymap, &vmap, speed, false, actions);
     // Keys and handles.
     let mut key_screens: Vec<(serde_json::Value, Pos2)> = vec![];
     for c in &cs {
         let (lid, uid, d) = (c.layer.id, c.prop.uid, c.dim);
-        let unlocked = !c.layer.switches.locked;
+        let unlocked = !comp.layer_effectively_locked(lid);
         for k in &c.keys {
             let kp = pos2(tm.x(k.t), ymap(k.v));
             // In the speed graph an end key rises with the handle being dragged; skipping it once it
@@ -480,7 +504,9 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
                 continue;
             }
             let kjson = json!({"layer": lid.0, "prop": uid, "time": k.time.seconds()});
-            key_screens.push((kjson.clone(), kp));
+            if unlocked {
+                key_screens.push((kjson.clone(), kp));
+            }
             // Handles (selected keys).
             for h in &k.handles {
                 let hp = pos2(tm.x(h.t), ymap(h.v));
@@ -495,7 +521,7 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
                 if unlocked && hresp.drag_started() {
                     let grabs: Vec<HandleGrab> = cs
                         .iter()
-                        .filter(|c2| !c2.layer.switches.locked)
+                        .filter(|c2| !comp.layer_effectively_locked(c2.layer.id))
                         .flat_map(|c2| {
                             c2.keys.iter().flat_map(move |k2| {
                                 k2.handles.iter().filter(|h2| h2.out == h.out).map(move |h2| HandleGrab {
@@ -579,8 +605,7 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
                 let (dx, dy) = (pt.x - g.press.x, pt.y - g.press.y);
                 let (time_ok, value_ok) = shift_axes(mods.shift, dx, dy);
                 // Graph Editor ▸ Snap: to the current time and other keys.
-                let others: Vec<f64> = all_key_times.iter().filter(|(u, i, _)| !(*u == uid && *i == k.idx)).map(|x| x.2).collect();
-                let t = if time_ok { super::graph_tools::snap_time(app, tm, (g.t + (tm.t(pt.x) - tm.t(g.press.x))).max(0.0), &others) } else { g.t };
+                let t = if time_ok { super::graph_tools::snap_time(app, &ctx, tm, (g.t + (tm.t(pt.x) - tm.t(g.press.x))).max(0.0)) } else { g.t };
                 let mut params = json!({"timeOffset": t - g.t, "merge": "graph-key", "fromStart": true});
                 if value_ok && !speed && c.editable {
                     params["valueOffset"] = json!(vmap(pt.y) - vmap(g.press.y));

@@ -719,3 +719,21 @@ fn rig_orbit_keeps_distance_and_pan_moves_both() {
     let off = r.eye - r.poi;
     assert!(off.y.abs() / off.length() < 0.9999);
 }
+
+/// A hidden folder's Environment light does not turn the backdrop: the visible one does.
+#[test]
+fn environment_rotation_skips_a_hidden_folder() {
+    let (mut p, cid, comp) = setup();
+    let mut hidden = light(&mut p, &comp, LightKind::Environment, [0.0; 3]);
+    set(&mut hidden, "lightOptions/rotation", Value::Scalar(90.0));
+    let mut shown = light(&mut p, &comp, LightKind::Environment, [0.0; 3]);
+    set(&mut shown, "lightOptions/rotation", Value::Scalar(30.0));
+    let hid = hidden.id;
+    push(&mut p, cid, hidden);
+    push(&mut p, cid, shown);
+    let c = p.comp_mut(cid).unwrap();
+    c.layer_groups = vec![effectcraft_project::LayerGroup { id: 9000, name: "Hidden".into(), members: vec![hid], video: false, ..Default::default() }];
+    let comp = p.comp(cid).unwrap();
+    let ctx = crate::EvalCtx::new(&p, cid, comp, Tick::ZERO);
+    assert!((compose::environment_rotation(&ctx) - 30f32.to_radians()).abs() < 1e-6);
+}

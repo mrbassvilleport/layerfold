@@ -20,6 +20,7 @@ fn remappable(l: &Layer) -> bool {
 
 fn time_stretch(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::group_unlocked(s, cid, ids, "layer.timeStretch")?;
     let reverse = str_p(p, "op") == Some("reverse");
     let pct = f_p(p, "percent");
     let dur = f_p(p, "duration");
@@ -95,6 +96,7 @@ fn source_secs(l: &Layer, t: Tick) -> f64 {
 
 fn enable_time_remap(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::group_unlocked(s, cid, ids, "layer.enableTimeRemap")?;
     let want = b_p(p, "value");
     let fd = s.project.comp(cid).ok_or(EngineError::NoComp)?.frame_duration();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
@@ -178,6 +180,7 @@ pub(crate) fn disable_time_remap(s: &mut Session, layers: &[LayerId]) -> Result<
 /// Freeze Frame: time remapping holding the current source frame for the whole layer.
 fn freeze(s: &mut Session, p: &Value, last: bool) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::group_unlocked(s, cid, ids, "layer.freezeFrame")?;
     let cti = s.time();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let (fd, cdur) = (comp.frame_duration(), comp.duration);

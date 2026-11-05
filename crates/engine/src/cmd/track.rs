@@ -81,15 +81,16 @@ pub fn specs() -> Vec<CommandSpec> {
 
 // ---------- enablement ----------
 
-fn trackable(l: &Layer) -> bool {
-    l.has_video() && !matches!(l.source, effectcraft_project::LayerSource::Text | effectcraft_project::LayerSource::Shape)
+/// A layer in a hidden folder is like one with its own Video off.
+fn trackable(c: &effectcraft_project::Comp, l: &Layer) -> bool {
+    l.has_video() && c.layer_group_video_enabled(l.id) && !matches!(l.source, effectcraft_project::LayerSource::Text | effectcraft_project::LayerSource::Shape)
 }
 
 fn can_track(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;
     let c = s.active_comp().ok_or("no composition is open")?;
     match s.state.selected_layers.first().and_then(|l| c.layer(*l)) {
-        Some(l) if trackable(l) => Ok(()),
+        Some(l) if trackable(c, l) => Ok(()),
         Some(_) => Err("select a footage, composition or solid layer to track".into()),
         None => Err("select a layer to track".into()),
     }
@@ -189,7 +190,7 @@ fn create(s: &mut Session, p: &V, cmd: &str) -> Result<V> {
     let (cid, lid) = layer_p(s, p, cmd)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
-    if !trackable(layer) {
+    if !trackable(comp, layer) {
         return Err(bad(cmd, format!("layer `{}` has no pixels to track", layer.name)));
     }
     let kind = kind_p(p, cmd)?.unwrap_or_default();
@@ -240,7 +241,7 @@ fn track_property(s: &mut Session, p: &V) -> Result<V> {
                 .iter()
                 .skip(ti + 1)
                 .chain(comp.layers.iter().take(ti))
-                .find(|l| l.id != target && trackable(l))
+                .find(|l| l.id != target && trackable(comp, l))
                 .map(|l| l.id)
                 .ok_or_else(|| bad("track.property", "no layer to track"))?
         }
@@ -425,6 +426,7 @@ fn set_point(s: &mut Session, p: &V) -> Result<V> {
 
 fn analyze(s: &mut Session, p: &V) -> Result<V> {
     let (cid, lid, uid) = current(s, p, "track.analyze")?;
+    super::group_unlocked(s, cid, vec![lid], "track.analyze")?;
     let dir = match str_p(p, "direction") {
         Some(d) => Direction::from_name(d).ok_or_else(|| bad("track.analyze", "direction: forward|backward|frameForward|frameBackward"))?,
         None => Direction::Forward,

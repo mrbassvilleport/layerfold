@@ -96,6 +96,47 @@ fn rms(m: &[f32]) -> f32 {
 }
 
 #[test]
+fn nested_group_audio_mute_restores_raw_children_and_ignores_video() {
+    let (mut p, cid) = comp_with(None, &[], false);
+    let c = p.comp_mut(cid).unwrap();
+    let id = c.layers[0].id;
+    let raw = c.layers.clone();
+    c.layer_groups = vec![
+        effectcraft_project::LayerGroup { id: 5000, name: "Outer".into(), members: vec![id], video: false, ..Default::default() },
+        effectcraft_project::LayerGroup { id: 5001, name: "Inner".into(), members: vec![id], parent: Some(5000), ..Default::default() },
+    ];
+    assert!(comp_has_audio(&p, cid));
+    let enabled = mix(&p, &Signal(ramp), cid, 0.1, 100);
+    assert!(rms(&enabled) > 0.01);
+    p.comp_mut(cid).unwrap().layer_groups[0].audio = false;
+    assert!(!comp_has_audio(&p, cid));
+    assert!(mix(&p, &Signal(ramp), cid, 0.1, 100).iter().all(|v| *v == 0.0));
+    p.comp_mut(cid).unwrap().layer_groups[0].audio = true;
+    p.comp_mut(cid).unwrap().layer_groups[1].audio = false;
+    assert!(mix(&p, &Signal(ramp), cid, 0.1, 100).iter().all(|v| *v == 0.0));
+    p.comp_mut(cid).unwrap().layer_groups[1].audio = true;
+    assert_eq!(mix(&p, &Signal(ramp), cid, 0.1, 100), enabled);
+    assert_eq!(p.comp(cid).unwrap().layers, raw);
+    p.comp_mut(cid).unwrap().layers[0].switches.audio = false;
+    assert!(!comp_has_audio(&p, cid));
+    assert!(mix(&p, &Signal(ramp), cid, 0.1, 100).iter().all(|v| *v == 0.0));
+}
+
+#[test]
+fn muted_group_solo_does_not_silence_ungrouped_audio() {
+    let (mut p, cid) = comp_with(None, &[], false);
+    let mut solo = p.comp(cid).unwrap().layers[0].clone();
+    solo.id = effectcraft_project::LayerId(p.alloc());
+    solo.switches.solo = true;
+    let id = solo.id;
+    let baseline = mix(&p, &Signal(ramp), cid, 0.1, 100);
+    let c = p.comp_mut(cid).unwrap();
+    c.layers.insert(0, solo);
+    c.layer_groups = vec![effectcraft_project::LayerGroup { id: 5000, name: "Muted".into(), members: vec![id], audio: false, ..Default::default() }];
+    assert_eq!(mix(&p, &Signal(ramp), cid, 0.1, 100), baseline);
+}
+
+#[test]
 fn backwards_reverses_the_layer_span() {
     let (p, cid) = comp_with(Some("ec.audio.backwards"), &[], false);
     let m = mix(&p, &Signal(ramp), cid, 0.0, SR as usize);

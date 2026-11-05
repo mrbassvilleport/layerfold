@@ -8,7 +8,7 @@ use effectcraft_project::build::{self, Ids};
 use effectcraft_project::{ItemKind, LayerSource, Solid};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, has_layers, layers_p, str_p};
+use super::{CommandSpec, bad, group_unlocked, has_layers, layers_p, str_p};
 use crate::{EngineError, Result, Session, cmd};
 
 const OPS: &str = "editableText|shapesFromText|masksFromText|shapesFromVector|instance3d";
@@ -19,6 +19,8 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     if lids.is_empty() {
         return Err(bad("layer.create", "select a layer first"));
     }
+    // The new layer goes above its source, inside the source's folder: a locked folder refuses.
+    let lids = group_unlocked(s, cid, lids, "layer.create")?;
     let time = s.time();
     let mut created = vec![];
     let mut skipped = vec![];
@@ -206,8 +208,11 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                 let bytes = s.services.read_file(&f.path).map_err(|e| EngineError::Other(format!("cannot read {}: {e}", f.path)))?;
                 let psd = effectcraft_psd::Psd::parse(bytes).map_err(|e| EngineError::Other(e.to_string()))?;
                 let id = s.edit("Convert to Editable Text", None, |proj, st| {
-                    let l = crate::psd_import::editable_text(proj, &comp, &src, &psd, sl.index as usize)
+                    let mut l = crate::psd_import::editable_text(proj, &comp, &src, &psd, sl.index as usize)
                         .ok_or_else(|| bad("layer.create", format!("{}: the Photoshop layer has no text", src.name)))?;
+                    // The text layer replaces the source in place: same id, so its folders,
+                    // children, mattes and layer references stay with it.
+                    l.id = lid;
                     let id = l.id;
                     let c = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
                     let at = c.layers.iter().position(|x| x.id == lid).ok_or(EngineError::NoComp)?;
@@ -259,7 +264,9 @@ fn insert_above(
     if hide_source && let Some(src) = c.layers.get_mut(at) {
         src.switches.video = false;
     }
+    let (src, id) = (below, l.id);
     c.layers.insert(at, l);
+    super::edit::inherit_layer_groups(c, src, id);
     Ok(())
 }
 

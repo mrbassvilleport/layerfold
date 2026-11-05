@@ -39,15 +39,27 @@ fn click(h: &mut Harness<'_, EffectcraftApp>, id: &str) {
     h.run_steps(2);
 }
 
-/// #581: the header's Discord pill fits its label with even padding (it was a fixed 104 px with
-/// the text at its left).
+/// A modified build must not look supported by the upstream team: no community buttons in the
+/// header, and Home and About keep only the plain link to the original source.
 #[test]
-fn discord_pill_fits_its_label() {
-    let h = harness();
-    let e = h.state().auto.find("header.discord").expect("the Discord pill").clone();
-    let text = h.ctx.fonts_mut(|f| f.layout_no_wrap("Discord".into(), effectcraft_ui_egui::theme::Tokens::semibold(12.0), egui::Color32::WHITE).size().x);
-    // Padding 10, the 14 px icon, a 6 px gap, the text, padding 12.
-    assert!((e.rect[2] - (text + 42.0)).abs() < 0.5, "{} for a {text} px label", e.rect[2]);
+fn modified_build_shows_no_upstream_community_links() {
+    let mut h = harness();
+    for id in ["header.discord", "header.github", "header.web"] {
+        assert!(h.state().auto.find(id).is_none(), "{id} is still in the header");
+    }
+    h.state_mut().ui.start_screen = true;
+    h.run_steps(3);
+    assert!(h.state().auto.find("home.help.github").is_some());
+    for id in ["home.help.discord", "home.help.website", "home.help.appPage", "home.sibling.photocraft"] {
+        assert!(h.state().auto.find(id).is_none(), "{id} is still on Home");
+    }
+    h.state_mut().ui.start_screen = false;
+    h.state_mut().dialog = Some(effectcraft_ui_egui::Dialog::About);
+    h.run_steps(3);
+    assert!(h.state().auto.find("about.help.github").is_some());
+    for id in ["about.help.discord", "about.help.website", "about.help.appPage"] {
+        assert!(h.state().auto.find(id).is_none(), "{id} is still in About");
+    }
 }
 
 #[test]

@@ -34,6 +34,14 @@ impl Session {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
+        // Organizational folders follow structural edits, without touching render order.
+        for item in p.items.values_mut() {
+            if let effectcraft_project::ItemKind::Comp(comp) = &mut item.kind
+                && !comp.layer_groups_are_valid()
+            {
+                Arc::make_mut(comp).normalize_layer_groups();
+            }
+        }
         // Layer styles: one Global Light per comp, whichever layer edited it.
         effectcraft_project::styles::sync_global_light(&before, &mut p);
         // Essential Properties of precomp layers follow their comps' Essential Graphics.

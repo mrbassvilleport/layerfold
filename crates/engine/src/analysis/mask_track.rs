@@ -338,15 +338,16 @@ pub(crate) fn face_effect(p: &mut Project, comp: ItemId, layer: LayerId, id: &st
     let mut next = p.next_id;
     let g = effectcraft_effects::instantiate(spec, &mut effectcraft_project::build::Ids(&mut next), spec.name, size);
     let uid = g.uid;
-    let fx = p.comp_mut(comp)?.layer_mut(layer)?.props.sub_mut("effects")?;
+    let fx = crate::commands::layer_mut(p, comp, layer).ok()?.props.sub_mut("effects")?;
     fx.children.push(g.into());
     p.next_id = next;
     Some(uid)
 }
 
-fn write_frames(p: &mut Project, job: &MaskTrackJob, frames: &[MaskFrame]) {
+fn write_frames(p: &mut Project, job: &MaskTrackJob, frames: &[MaskFrame]) -> bool {
     let points = if frames.iter().any(|f| f.3.is_some()) { face_points_group(p, job.comp, job.layer) } else { None };
-    let Some(layer) = p.comp_mut(job.comp).and_then(|c| c.layer_mut(job.layer)) else { return };
+    // A folder locked meanwhile keeps its layers unchanged.
+    let Ok(layer) = crate::commands::layer_mut(p, job.comp, job.layer) else { return false };
     if let Some(g) = layer.props.find_group_mut(job.mask)
         && let Some(pr) = g.get_mut("path")
     {
@@ -364,6 +365,7 @@ fn write_frames(p: &mut Project, job: &MaskTrackJob, frames: &[MaskFrame]) {
             }
         }
     }
+    true
 }
 
 impl Session {
@@ -433,8 +435,11 @@ impl Session {
         let finished = job.is_finished();
         let changed = !frames.is_empty();
         if changed {
-            write_frames(Arc::make_mut(&mut self.project), job, &frames);
-            if self.state.active_comp == Some(job.comp)
+            if !write_frames(Arc::make_mut(&mut self.project), job, &frames) {
+                // The folder was locked meanwhile: stop, and say why when the job ends.
+                job.shared.cancel.store(true, Ordering::Relaxed);
+                lock(&job.shared.state).error = Some("the layer's group was locked".into());
+            } else if self.state.active_comp == Some(job.comp)
                 && let Some(last) = frames.last()
             {
                 self.state.times.insert(job.comp, last.1);

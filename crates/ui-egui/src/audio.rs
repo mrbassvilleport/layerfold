@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use effectcraft_engine::project::ItemId;
+use effectcraft_engine::project::{ItemId, ItemKind, LayerId, Project};
 use effectcraft_engine::time::{FrameRate, Tick};
 
 use crate::frames::RenderSource;
@@ -88,9 +88,10 @@ impl AudioFeed {
                 pk[i & 1] = pk[i & 1].max(s.abs());
             }
             real = n;
+            // Keep the count and queue removal atomic relative to live remix invalidation.
+            self.consumed.fetch_add((real / 2) as u64, Ordering::Relaxed);
         }
         out[real..].iter_mut().for_each(|o| *o = 0.0);
-        self.consumed.fetch_add((real / 2) as u64, Ordering::Relaxed);
         for (c, v) in pk.into_iter().enumerate() {
             // Rust 1.99 renamed `fetch_update` to `try_update`; keep the old name while the
             // workspace supports Rust 1.95 (`rust-version`).
@@ -180,9 +181,64 @@ pub struct AudioPlayback {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     /// wasm32 (no threads): what the feeder thread would own, run by [`AudioPlayback::pump`].
-    feeder: Option<(RenderSource, ItemId, i64, u32)>,
+    feeder: Option<Feeder>,
+    /// Latest mix snapshot. Mixing never holds this lock; only queue publication does.
+    source: Arc<Mutex<Arc<RenderSource>>>,
     pub rate: u32,
     pub span: PlaySpan,
+}
+
+struct Feeder {
+    source: Arc<RenderSource>,
+    comp: ItemId,
+    cursor: i64,
+    mix: u32,
+}
+
+impl Feeder {
+    fn block(&mut self, latest: &Mutex<Arc<RenderSource>>, feed: &AudioFeed, span: &PlaySpan, rate: u32) {
+        let source = latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if !Arc::ptr_eq(&self.source, &source) {
+            self.source = source;
+            // Samples already handed to the device stay there. Replace only the pending tail,
+            // starting at the next unconsumed sample, including across work-area loops.
+            self.cursor = if span.looping {
+                clock_sample(span, feed.consumed(), 0)
+            } else {
+                span.start.saturating_add(i64::try_from(feed.consumed()).unwrap_or(i64::MAX)).min(span.wb)
+            };
+        }
+        let mut cursor = self.cursor;
+        if cursor >= span.wb && span.looping {
+            cursor = span.wa;
+        }
+        let n = span.wb.saturating_sub(cursor).clamp(0, BLOCK as i64) as usize;
+        let samples = if n > 0 { mix_block(&self.source, self.comp, sample_time(cursor, rate), n, rate, self.mix) } else { Vec::new() };
+        let current = latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !Arc::ptr_eq(&self.source, &current) {
+            // An edit arrived while this block was being mixed. Never publish its old sound.
+            return;
+        }
+        if n == 0 {
+            feed.finished.store(true, Ordering::Relaxed);
+        } else {
+            feed.push(&samples);
+            self.cursor = cursor + n as i64;
+        }
+    }
+}
+
+/// Only audio gates trigger a live remix; folding, naming, Video and Lock do not flush sound.
+/// Include every composition so switches inside precomps are picked up too.
+fn audio_switches(project: &Project) -> impl Iterator<Item = (ItemId, LayerId, bool, bool)> + '_ {
+    project
+        .items
+        .iter()
+        .filter_map(|(id, item)| match &item.kind {
+            ItemKind::Comp(c) => Some((*id, c)),
+            _ => None,
+        })
+        .flat_map(|(cid, c)| c.layers.iter().map(move |l| (cid, l.id, l.switches.audio && c.layer_group_audio_enabled(l.id), l.switches.solo)))
 }
 
 /// Audio kept queued ahead of the device: ~200 ms (a feeder thread tops it up continuously);
@@ -197,7 +253,7 @@ impl AudioPlayback {
     /// at (resampled to the device's rate when they differ; 0 = the device's rate).
     #[allow(clippy::too_many_arguments)]
     pub fn start(
-        mut device: Box<dyn AudioDevice>,
+        device: Box<dyn AudioDevice>,
         src: RenderSource,
         comp: ItemId,
         start: Tick,
@@ -211,9 +267,11 @@ impl AudioPlayback {
         let span = PlaySpan::new(start, wa, wb, looping, rate);
         let feed = Arc::new(AudioFeed::default());
         let stop = Arc::new(AtomicBool::new(false));
+        let source = Arc::new(Mutex::new(Arc::new(src)));
+        let feeder = Feeder { source: source.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), comp, cursor: span.start, mix };
         if cfg!(target_arch = "wasm32") {
             // The device takes samples only in `pump`, which fills the queue first.
-            let mut p = AudioPlayback { feed: feed.clone(), device, stop, thread: None, feeder: Some((src, comp, span.start, mix)), rate, span };
+            let mut p = AudioPlayback { feed: feed.clone(), device, stop, thread: None, feeder: Some(feeder), source, rate, span };
             p.device.start(feed)?;
             p.pump();
             return Ok(p);
@@ -223,15 +281,15 @@ impl AudioPlayback {
         // as that took (#408). The device plays silence until the first block arrives, and the
         // clock doesn't count it.
         let thread = {
-            let (feed, stop) = (feed.clone(), stop.clone());
+            let (feed, stop, source) = (feed.clone(), stop.clone(), source.clone());
             std::thread::Builder::new()
                 .name("ec-audio-feed".into())
                 .spawn(move || {
-                    let mut cursor = span.start;
+                    let mut feeder = feeder;
                     let target = queue_target(rate);
                     while !stop.load(Ordering::Relaxed) {
                         if feed.queued_frames() < target && !feed.finished.load(Ordering::Relaxed) {
-                            cursor = feed_block(&src, comp, &feed, &span, cursor, rate, mix);
+                            feeder.block(&source, &feed, &span, rate);
                         } else {
                             std::thread::sleep(std::time::Duration::from_millis(4));
                         }
@@ -239,17 +297,31 @@ impl AudioPlayback {
                 })
                 .map_err(|e| e.to_string())?
         };
-        device.start(feed.clone())?;
-        Ok(AudioPlayback { feed, device, stop, thread: Some(thread), feeder: None, rate, span })
+        let mut playback = AudioPlayback { feed, device, stop, thread: Some(thread), feeder: None, source, rate, span };
+        playback.device.start(playback.feed.clone())?;
+        Ok(playback)
+    }
+
+    /// Change live layer/group Audio and solo gates without stopping the output or its clock.
+    /// Old queued samples are discarded; an in-flight old block cannot refill the queue.
+    pub fn update_source(&mut self, src: RenderSource) {
+        let previous = self.source.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if Arc::ptr_eq(&previous.project, &src.project) || audio_switches(&previous.project).eq(audio_switches(&src.project)) {
+            return;
+        }
+        let mut source = self.source.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *source = Arc::new(src);
+        self.feed.clear();
+        self.feed.finished.store(false, Ordering::Relaxed);
     }
 
     /// Every UI frame while playing: on wasm32 mix ahead into the feed (what the feeder thread
     /// does elsewhere), then let the device take what it needs.
     pub fn pump(&mut self) {
-        if let Some((src, comp, cursor, mix)) = &mut self.feeder {
+        if let Some(feeder) = &mut self.feeder {
             let target = queue_target(self.rate);
             while self.feed.queued_frames() < target && !self.feed.finished.load(Ordering::Relaxed) {
-                *cursor = feed_block(src, *comp, &self.feed, &self.span, *cursor, self.rate, *mix);
+                feeder.block(&self.source, &self.feed, &self.span, self.rate);
             }
         }
         self.device.pump();
@@ -277,22 +349,6 @@ impl Drop for AudioPlayback {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-/// Mix one block at `cursor` into the feed; returns the next cursor (wrapping or finishing at
-/// the work-area end).
-fn feed_block(src: &RenderSource, comp: ItemId, feed: &AudioFeed, span: &PlaySpan, cursor: i64, rate: u32, mix: u32) -> i64 {
-    let mut cursor = cursor;
-    if cursor >= span.wb {
-        if !span.looping {
-            feed.finished.store(true, Ordering::Relaxed);
-            return cursor;
-        }
-        cursor = span.wa;
-    }
-    let n = ((span.wb - cursor) as usize).min(BLOCK);
-    feed.push(&mix_block(src, comp, sample_time(cursor, rate), n, rate, mix));
-    cursor + n as i64
 }
 
 /// `n` stereo frames of `comp`'s mix from comp time `t` at the device `rate`, mixed at `mix` Hz
@@ -443,6 +499,136 @@ impl Meter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct QuietDevice;
+    impl AudioDevice for QuietDevice {
+        fn sample_rate(&self) -> u32 {
+            8000
+        }
+        fn start(&mut self, _: Arc<AudioFeed>) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&mut self) {}
+    }
+
+    #[test]
+    fn live_remix_keeps_sample_position_through_loops_and_non_looping_end() {
+        use effectcraft_engine::Session;
+        use serde_json::json;
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"width":16,"height":16,"duration":3})).unwrap();
+        let id = s.execute("layer.newSolid", json!({"color":"#406080"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("effect.apply", json!({"layers":[id],"effect":"ec.audio.tone"})).unwrap();
+        let cid = s.active_comp_id().unwrap();
+        let mut app = crate::EffectcraftApp::new(s);
+        let src = app.render_source();
+        let span = PlaySpan { start: 7500, wa: 1600, wb: 8000, looping: true };
+        let source = Arc::new(Mutex::new(Arc::new(src.clone())));
+        let mut playback = AudioPlayback {
+            feed: Arc::new(AudioFeed::default()),
+            device: Box::new(QuietDevice),
+            stop: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            feeder: Some(Feeder { source: source.lock().unwrap().clone(), comp: cid, cursor: span.start, mix: 8000 }),
+            source: source.clone(),
+            rate: 8000,
+            span,
+        };
+        playback.pump();
+        let mut consumed = vec![0.; 1200]; // 600 frames: through the work-area boundary.
+        playback.feed.pull(&mut consumed);
+        assert_eq!(playback.clock(), 1700);
+        let consumed_before = playback.feed.consumed();
+        app.session.execute("layer.setSwitch", json!({"layer":id,"switch":"audio","value":false})).unwrap();
+        playback.update_source(app.render_source());
+        playback.pump();
+        playback.feed.pull(&mut consumed);
+        assert!(consumed.iter().all(|s| *s == 0.));
+        app.session.execute("edit.undo", json!({})).unwrap();
+        playback.update_source(app.render_source());
+        let next = clock_sample(&span, playback.feed.consumed(), 0);
+        playback.pump();
+        playback.feed.pull(&mut consumed);
+        assert_eq!(consumed, mix_block(&src, cid, sample_time(next, 8000), 600, 8000, 8000));
+        assert_eq!(playback.feed.consumed(), consumed_before + 1200);
+        assert_eq!(playback.span, span);
+        // A completed non-looping span must not replay its last sample after a switch.
+        playback.span = PlaySpan { start: 0, wa: 0, wb: playback.feed.consumed() as i64, looping: false };
+        app.session.execute("layer.setSwitch", json!({"layer":id,"switch":"audio","value":false})).unwrap();
+        playback.update_source(app.render_source());
+        playback.pump();
+        assert!(playback.finished());
+        assert_eq!(playback.feed.queued_frames(), 0);
+    }
+
+    #[test]
+    fn live_update_during_slow_mix_discards_the_old_inflight_block() {
+        use effectcraft_engine::color::Label;
+        use effectcraft_engine::project::{Comp, Footage, FootageKind, LayerSource, Project, build};
+        use effectcraft_engine::render::FootageSource;
+        use effectcraft_engine::render::cache::LayerCache;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        struct Slow {
+            started: Mutex<Option<mpsc::Sender<()>>>,
+            resume: Mutex<mpsc::Receiver<()>>,
+        }
+        impl FootageSource for Slow {
+            fn frame(&self, _: ItemId, _: &Footage, _: Tick) -> Option<Arc<effectcraft_engine::raster::Image>> {
+                None
+            }
+            fn audio(&self, _: ItemId, _: &Footage, _: Tick, frames: usize, _: u32) -> Option<Vec<f32>> {
+                if let Some(tx) = self.started.lock().unwrap().take() {
+                    tx.send(()).ok()?;
+                    self.resume.lock().unwrap().recv().ok()?;
+                }
+                Some(vec![0.5; frames * 2])
+            }
+        }
+        let mut project = Project::default();
+        let footage = Footage { kind: FootageKind::Audio, has_audio: true, duration: Tick::from_seconds_f64(10.), ..Default::default() };
+        let item = project.add_item("signal", Label::SeaFoam, None, ItemKind::Footage(footage));
+        let mut comp = Comp::new(16, 16, FrameRate::new(30, 1), Tick::from_seconds_f64(3.));
+        let layer = build::layer(&mut project, &comp, "Signal", LayerSource::Footage { item }, (0, 0), None);
+        let lid = layer.id;
+        comp.layers.push(layer);
+        let cid = project.add_item("Comp", Label::Sandstone, None, ItemKind::Comp(comp.into()));
+        let (started, ready) = mpsc::channel();
+        let (resume, wait) = mpsc::channel();
+        let mut src = RenderSource {
+            project: Arc::new(project),
+            footage: Arc::new(Slow { started: Mutex::new(Some(started)), resume: Mutex::new(wait) }),
+            expr: None,
+            layer_cache: Arc::new(LayerCache::default()),
+            gpu: None,
+            gpu_display: false,
+            disk: None,
+        };
+        let mut p = AudioPlayback::start(Box::new(QuietDevice), src.clone(), cid, Tick::ZERO, Tick::ZERO, Tick::from_seconds_f64(3.), true, 0).unwrap();
+        let started = ready.recv_timeout(Duration::from_secs(10));
+        if started.is_err() {
+            let _ = resume.send(());
+        }
+        started.unwrap();
+        let start = Instant::now();
+        // Several edits during the same old mix: the latest request must win.
+        for audio in [false, true, false] {
+            Arc::make_mut(&mut src.project).comp_mut(cid).unwrap().layer_mut(lid).unwrap().switches.audio = audio;
+            p.update_source(src.clone());
+        }
+        let elapsed = start.elapsed();
+        resume.send(()).unwrap();
+        assert!(elapsed < Duration::from_secs(1), "the UI waited for the old mix: {elapsed:?}");
+        while p.feed.queued_frames() < 512 {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut out = [1.; 1024];
+        p.feed.pull(&mut out);
+        assert!(out.iter().all(|s| *s == 0.), "old in-flight sound must not escape after mute");
+        assert_eq!(p.feed.consumed(), 512);
+        assert_eq!(p.clock(), 512);
+    }
 
     #[test]
     fn clock_follows_consumed_frames_and_loops() {

@@ -246,6 +246,7 @@ fn stereo_rig(s: &mut Session, p: &Value) -> Result<Value> {
         let ctl_id = ctl.id;
         let src_now = proj.comp(cid).cloned().ok_or(EngineError::NoComp)?;
         let at = src_now.layers.iter().position(|l| l.id == master_id).unwrap_or(0);
+        let at = super::layer::insertion_index(&src_now, &[], Some(at))?;
         proj.comp_mut(cid).ok_or(EngineError::NoComp)?.layers.insert(at, ctl);
         // Master camera frame at the current time.
         let src_now = proj.comp(cid).cloned().ok_or(EngineError::NoComp)?;
@@ -323,6 +324,7 @@ fn orbit_null(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "camera.orbitNull";
     let cid = comp_id(s, p)?;
     let cam_id = camera_p(s, p, cid, cmd)?;
+    super::group_unlocked(s, cid, vec![cam_id], cmd)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
     let cam = comp.layer(cam_id).cloned().ok_or(EngineError::NoComp)?;
     if cam.parent.is_some() {
@@ -345,6 +347,7 @@ fn orbit_null(s: &mut Session, p: &Value) -> Result<Value> {
         let c = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let at = c.layers.iter().position(|l| l.id == cam_id).unwrap_or(0);
         c.layers.insert(at, null);
+        super::edit::inherit_layer_groups(c, cam_id, nid);
         let l = c.layer_mut(cam_id).ok_or(EngineError::NoComp)?;
         l.parent = Some(nid);
         for path in ["transform/position", "transform/poi"] {
@@ -374,6 +377,7 @@ fn control_light(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => resolve_layer(&comp, v).into_iter().collect(),
         None => s.state.selected_layers.iter().copied().filter(|id| comp.layer(*id).is_some_and(Layer::is_light)).collect(),
     };
+    let lights = super::group_unlocked(s, cid, lights, cmd)?;
     if lights.is_empty() || lights.iter().any(|id| !comp.layer(*id).is_some_and(Layer::is_light)) {
         return Err(bad(cmd, "select a light layer"));
     }

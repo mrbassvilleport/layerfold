@@ -59,6 +59,7 @@ pub enum Icon {
     Adjustment,
     Cube,
     Draft3D,
+    Filmstrip,
     Graph,
     Stopwatch,
     Keyframe,
@@ -457,6 +458,11 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.closed(&[(8.0, 2.0), (13.5, 5.0), (13.5, 11.0), (8.0, 14.0), (2.5, 11.0), (2.5, 5.0)]);
             pen.line(&[(2.5, 5.0), (8.0, 8.0), (13.5, 5.0)]);
             pen.line(&[(8.0, 8.0), (8.0, 14.0)]);
+        }
+        Filmstrip => {
+            pen.rect(2.0, 3.5, 14.0, 12.5);
+            pen.line(&[(6.0, 3.5), (6.0, 12.5)]);
+            pen.line(&[(10.0, 3.5), (10.0, 12.5)]);
         }
         Draft3D => {
             pen.closed(&[(8.0, 2.0), (13.5, 5.0), (13.5, 11.0), (8.0, 14.0), (2.5, 11.0), (2.5, 5.0)]);

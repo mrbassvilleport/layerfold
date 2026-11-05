@@ -321,6 +321,7 @@ fn solo_matte(ctx: &EvalCtx, l: &Layer) -> Option<(Layer, bool)> {
     solo.blend_mode = effectcraft_color::BlendMode::Normal;
     solo.preserve_transparency = false;
     solo.switches.video = true;
+    // A matte in a hidden folder still mattes, like one with its own Video off.
     Some((solo, m.is_active_at(ctx.time)))
 }
 

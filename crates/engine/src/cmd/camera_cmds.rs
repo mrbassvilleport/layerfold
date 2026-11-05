@@ -74,7 +74,7 @@ fn can_track(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;
     let c = s.active_comp().ok_or("no composition is open")?;
     match s.state.selected_layers.first().and_then(|l| c.layer(*l)) {
-        Some(l) if l.has_video() && !l.switches.adjustment && !l.is_camera() && !l.is_light() => Ok(()),
+        Some(l) if l.has_video() && c.layer_group_video_enabled(l.id) && !l.switches.adjustment && !l.is_camera() && !l.is_light() => Ok(()),
         Some(_) => Err("Track Camera needs a footage or composition layer".into()),
         None => Err("select a layer to track".into()),
     }
@@ -147,6 +147,7 @@ fn method_p(p: &Value) -> Result<Option<SolveMethod>> {
 /// (reusing one it already has), set the given options and start the analysis.
 fn track_camera(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, "track.camera")?;
+    super::group_unlocked(s, cid, vec![lid], "track.camera")?;
     let shot = shot_p(p)?;
     let method = method_p(p)?;
     let aov = f_p(p, "aov").or_else(|| f_p(p, "angleOfView"));
@@ -214,6 +215,7 @@ fn track_camera(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = ct_p(s, p, "camera.analyze")?;
+    super::group_unlocked(s, cid, vec![lid], "camera.analyze")?;
     let wait = b_p(p, "wait").unwrap_or(false);
     let n = s.start_camera(cid, lid, uid, wait).map_err(EngineError::Other)?;
     let mut out = json!({"layer": lid.0, "effect": uid, "frames": n, "running": s.is_camera_analyzing(), "progress": s.camera_progress()});
@@ -374,6 +376,7 @@ fn insert_above(proj: &mut Project, cid: ItemId, above: LayerId, l: Layer) -> Re
     let at = comp.layers.iter().position(|x| x.id == above).unwrap_or(0);
     let id = l.id;
     comp.layers.insert(at, l);
+    super::edit::inherit_layer_groups(comp, above, id);
     Ok(id)
 }
 
@@ -388,6 +391,7 @@ fn add_solid(proj: &mut Project, comp: &effectcraft_project::Comp, name: &str, s
 fn create_from_solve(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "camera.createFromSolve";
     let (cid, lid, uid) = ct_p(s, p, cmd)?;
+    super::group_unlocked(s, cid, vec![lid], cmd)?;
     let kind = CreateKind::from_name(str_p(p, "kind").unwrap_or("null")).ok_or_else(|| bad(cmd, "kind: text|solid|null|shadowCatcher|camera"))?;
     let pl = placed(&s.project, cid, lid, uid).ok_or_else(|| bad(cmd, "the camera is not solved yet (analysis still running or failed)"))?;
     let k = pl.frame_at(s.time_of(cid));
@@ -398,6 +402,11 @@ fn create_from_solve(s: &mut Session, p: &Value) -> Result<Value> {
     let params = static_params(g);
     let size_pct = effectcraft_effects::warp_stab::param(&params, "targetSize").map(|v| v.as_f64()).unwrap_or(100.0) / 100.0;
     let existing_cam = params.get(CAMERA).map(|v| v.as_f64() as u64).filter(|id| *id > 0 && comp.layer(LayerId(*id)).is_some_and(Layer::is_camera));
+    if kind == CreateKind::Camera
+        && let Some(id) = existing_cam
+    {
+        super::group_unlocked(s, cid, vec![LayerId(id)], cmd)?;
+    }
     // Targets: one, or one per selected point (Create Multiple …) sharing the selection's plane.
     let targets: Vec<Target> = if kind == CreateKind::Camera {
         vec![]
@@ -521,6 +530,7 @@ fn create_from_solve(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_ground(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "camera.setGroundPlane";
     let (cid, lid, uid) = ct_p(s, p, cmd)?;
+    super::group_unlocked(s, cid, vec![lid], cmd)?;
     let pl = placed(&s.project, cid, lid, uid).ok_or_else(|| bad(cmd, "the camera is not solved yet"))?;
     let k = pl.frame_at(s.time_of(cid));
     let ids = ids_p(s, p);
@@ -551,6 +561,7 @@ fn set_ground(s: &mut Session, p: &Value) -> Result<Value> {
 fn delete_points(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "camera.deletePoints";
     let (cid, lid, uid) = ct_p(s, p, cmd)?;
+    super::group_unlocked(s, cid, vec![lid], cmd)?;
     let ids = ids_p(s, p);
     if ids.is_empty() {
         return Err(bad(cmd, "select track points (or give `points`)"));

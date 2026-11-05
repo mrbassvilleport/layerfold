@@ -432,6 +432,7 @@ fn composite_iso_with(
 /// one; `matte_img` as in [`composite_iso_with`].
 fn track_matte(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, img: GpuImage, matte_img: Option<GpuImage>) -> Option<GpuImage> {
     let Some((m, kind)) = r.track_matte(ctx, layer) else { return Some(img) };
+    // Like a matte with its own Video off, a matte in a hidden folder still mattes.
     let mimg = match matte_img.filter(|i| (i.width, i.height) == (img.width, img.height)) {
         Some(i) => i,
         None => {

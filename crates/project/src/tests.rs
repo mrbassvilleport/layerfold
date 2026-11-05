@@ -20,6 +20,216 @@ fn project_with_layer() -> (Project, crate::ItemId) {
 }
 
 #[test]
+fn layer_folders_roundtrip_ignore_pixels_and_repair_without_reordering() {
+    let (mut p, cid) = project_with_layer();
+    let id = p.comp(cid).unwrap().layers[0].id;
+    let plain = p.to_file_json().unwrap();
+    assert!(!plain.contains("layer_groups"), "old projects need no new field");
+    assert!(Project::from_json(&plain).unwrap().comp(cid).unwrap().layer_groups.is_empty());
+    let before = p.comp(cid).unwrap().clone();
+    p.comp_mut(cid).unwrap().layer_groups.push(crate::LayerGroup { id: 5000, name: "Folder".into(), collapsed: true, members: vec![id], ..Default::default() });
+    let grouped = p.comp(cid).unwrap();
+    assert!(grouped.same_pixels(&before));
+    assert_eq!(grouped.pixel_form(), before.pixel_form());
+    let text = p.to_file_json().unwrap();
+    let reopened = Project::from_json(&text).unwrap();
+    assert_eq!(reopened.comp(cid).unwrap().layer_groups, grouped.layer_groups);
+    assert!(reopened.next_id > 5000);
+    let malformed = p.comp_mut(cid).unwrap();
+    malformed.layer_groups[0].name = "  ".into();
+    malformed.layer_groups[0].members.extend([id, crate::LayerId(u64::MAX)]);
+    malformed.layer_groups.push(malformed.layer_groups[0].clone());
+    let (repaired, notes) = Project::from_json_repaired(&p.to_file_json().unwrap()).unwrap();
+    assert!(notes.iter().any(|s| s.contains("layer groups")));
+    let c = repaired.comp(cid).unwrap();
+    assert!(c.layer_groups_are_valid());
+    assert_eq!(c.layer_groups.len(), 1);
+    assert_eq!(c.layer_groups[0].name, "Group");
+    assert_eq!(c.layers, before.layers);
+}
+
+#[test]
+fn invalid_folder_ids_cannot_exhaust_the_project_allocator() {
+    for id in [u64::MAX, u64::MAX - 1, crate::MAX_GROUP_ID] {
+        let (mut p, cid) = project_with_layer();
+        let member = p.comp(cid).unwrap().layers[0].id;
+        let next = p.next_id;
+        p.comp_mut(cid).unwrap().layer_groups.push(crate::LayerGroup {
+            id,
+            name: "Broken".into(),
+            collapsed: false,
+            members: vec![member],
+            ..Default::default()
+        });
+        let (mut loaded, notes) = Project::from_json_repaired(&p.to_file_json().unwrap()).unwrap();
+        assert!(loaded.comp(cid).unwrap().layer_groups.is_empty());
+        assert!(!notes.is_empty());
+        assert_eq!(loaded.alloc(), next);
+        assert_eq!(loaded.next_id, next + 1);
+    }
+}
+
+#[test]
+fn crossing_folder_memberships_repair_into_disjoint_contiguous_spans() {
+    let (mut p, cid) = project_with_layer();
+    let c = p.comp_mut(cid).unwrap();
+    let template = c.layers[0].clone();
+    c.layers = (100..105)
+        .map(|id| {
+            let mut l = template.clone();
+            l.id = crate::LayerId(id);
+            l
+        })
+        .collect();
+    c.layer_groups = vec![
+        crate::LayerGroup { id: 500, name: "First".into(), collapsed: false, members: vec![crate::LayerId(100), crate::LayerId(104)], ..Default::default() },
+        crate::LayerGroup { id: 501, name: "Second".into(), collapsed: true, members: vec![crate::LayerId(101), crate::LayerId(103)], ..Default::default() },
+    ];
+    let before = c.layers.clone();
+    assert!(c.normalize_layer_groups());
+    assert!(c.layer_groups_are_valid());
+    assert_eq!(c.layers, before);
+    assert_eq!(c.layer_groups[0].members, vec![crate::LayerId(100)]);
+    assert_eq!(c.layer_groups[1].members, vec![crate::LayerId(101), crate::LayerId(102), crate::LayerId(103)]);
+    assert!(!c.normalize_layer_groups());
+}
+
+/// A folder's Video changes only its members' frames, so the cache keeps the rest (#1641); when
+/// it also turns the only Solo on or off, every frame changes.
+#[test]
+fn folder_video_limits_the_changed_span_and_gates_solo() {
+    let (mut p, cid) = project_with_layer();
+    let comp = p.comp(cid).unwrap().clone();
+    let LayerSource::Solid { item } = comp.layers[0].source else { panic!("solid") };
+    let mut short = build::layer(&mut p, &comp, "Short", LayerSource::Solid { item }, (1920, 1080), None);
+    short.in_point = Tick::from_seconds_f64(2.0);
+    short.out_point = Tick::from_seconds_f64(4.0);
+    let c = p.comp_mut(cid).unwrap();
+    c.layers.insert(0, short);
+    let id = c.layers[0].id;
+    c.layer_groups = vec![
+        crate::LayerGroup { id: 6000, name: "Outer".into(), members: vec![id], ..Default::default() },
+        crate::LayerGroup { id: 6001, name: "Inner".into(), members: vec![id], parent: Some(6000), ..Default::default() },
+    ];
+    let shown = c.clone();
+    for g in [0, 1] {
+        let mut hidden = shown.clone();
+        hidden.layer_groups[g].video = false;
+        let (s, e) = hidden.changed_span(&shown).expect("a span, not the whole comp");
+        assert!(s <= Tick::from_seconds_f64(2.0) && s > Tick::from_seconds_f64(1.9), "group {g}: starts at the member's in point");
+        assert!(e >= Tick::from_seconds_f64(4.0) && e < Tick::from_seconds_f64(4.1), "group {g}: ends at its out point");
+    }
+    let mut soloed = shown.clone();
+    soloed.layers[0].switches.solo = true;
+    let mut hidden = soloed.clone();
+    hidden.layer_groups[0].video = false;
+    // Like a soloed layer with its own Video off, a Solo in a hidden folder still counts.
+    assert!(soloed.any_solo() && hidden.any_solo(), "a Solo in a hidden folder counts");
+    assert!(hidden.changed_span(&soloed).is_some(), "only the soloed layer's span changes");
+}
+
+#[test]
+fn nested_layer_groups_roundtrip_gates_and_pixel_keys() {
+    let (mut p, cid) = project_with_layer();
+    let c = p.comp_mut(cid).unwrap();
+    let id = c.layers[0].id;
+    let switches = c.layers[0].switches.clone();
+    c.layer_groups = vec![
+        crate::LayerGroup { id: 5000, name: "Parent".into(), members: vec![id], ..Default::default() },
+        crate::LayerGroup { id: 5001, name: "Child".into(), members: vec![id], parent: Some(5000), ..Default::default() },
+    ];
+    assert!(c.layer_groups_are_valid());
+    assert_eq!(c.layer_group(id).unwrap().id, 5001);
+    assert_eq!(c.layer_group_path(id).iter().map(|g| g.id).collect::<Vec<_>>(), [5000, 5001]);
+    assert!(c.group_contains_group(5000, 5001));
+    assert!(!c.group_contains_group(5000, 5000));
+    assert_eq!(c.group_descendants(5000), [5000, 5001]);
+    let enabled = c.clone();
+    c.layer_groups[0].video = false;
+    c.layer_groups[0].audio = false;
+    c.layer_groups[0].locked = true;
+    assert!(!c.layer_effectively_visible(id));
+    assert!(!c.layer_effectively_audio(id));
+    assert!(c.layer_effectively_locked(id));
+    assert_eq!(c.layers[0].switches, switches);
+    assert!(!c.same_pixels(&enabled));
+    assert_ne!(c.pixel_form(), enabled.pixel_form());
+    let muted = c.clone();
+    c.layer_groups[0].name = "Renamed".into();
+    c.layer_groups[0].collapsed = true;
+    c.layer_groups[0].audio = true;
+    c.layer_groups[0].locked = false;
+    assert!(c.same_pixels(&muted));
+    assert_eq!(c.pixel_form(), muted.pixel_form());
+    let reopened = Project::from_json(&p.to_file_json().unwrap()).unwrap();
+    assert_eq!(reopened.comp(cid).unwrap().layer_groups, p.comp(cid).unwrap().layer_groups);
+    let old: crate::LayerGroup = serde_json::from_str(&format!(r#"{{"id":50,"name":"Old","members":[{}]}}"#, id.0)).unwrap();
+    assert!(old.video && old.audio && !old.locked && old.parent.is_none());
+}
+
+#[test]
+fn nested_layer_group_repair_bounds_cycles_depth_and_restores_parent_spans() {
+    let (mut p, cid) = project_with_layer();
+    let c = p.comp_mut(cid).unwrap();
+    let id = c.layers[0].id;
+    let mut extra = c.layers[0].clone();
+    extra.id = crate::LayerId(id.0 + 1);
+    c.layers.push(extra);
+    let layers = c.layers.clone();
+    c.layer_groups = (1..=40)
+        .map(|n| crate::LayerGroup { id: 5000 + n, name: format!("Group {n}"), members: vec![id], parent: (n > 1).then_some(4999 + n), ..Default::default() })
+        .collect();
+    c.layer_groups[0].parent = Some(5002);
+    c.layer_groups[2].parent = Some(u64::MAX);
+    c.layer_groups[1].members.clear();
+    assert!(!c.layer_groups_are_valid());
+    assert!(c.normalize_layer_groups());
+    assert!(c.layer_groups_are_valid());
+    assert_eq!(c.layers, layers);
+    assert!(c.layer_group_path(id).len() <= crate::MAX_GROUP_DEPTH);
+    assert!(!c.normalize_layer_groups());
+    c.layer_groups = (1..=33)
+        .map(|n| crate::LayerGroup { id: 6000 + n, name: format!("Depth {n}"), members: vec![id], parent: (n > 1).then_some(5999 + n), ..Default::default() })
+        .collect();
+    let last = c.layer_groups.pop().unwrap();
+    assert!(c.layer_groups_are_valid(), "32 folder levels are supported");
+    assert_eq!(c.layer_group_path(id).len(), crate::MAX_GROUP_DEPTH);
+    c.layer_groups.push(last);
+    assert!(!c.layer_groups_are_valid(), "33 folder levels must be repaired");
+    assert!(c.normalize_layer_groups());
+    assert!(c.layer_groups_are_valid());
+    assert_eq!(c.layers, layers);
+}
+
+#[test]
+fn nested_layer_groups_expand_inserted_members_and_remap_parents() {
+    let (mut p, cid) = project_with_layer();
+    let c = p.comp_mut(cid).unwrap();
+    let template = c.layers[0].clone();
+    c.layers = (100..103)
+        .map(|id| {
+            let mut l = template.clone();
+            l.id = crate::LayerId(id);
+            l
+        })
+        .collect();
+    c.layer_groups = vec![
+        crate::LayerGroup { id: 5000, name: "Parent".into(), members: vec![crate::LayerId(100)], ..Default::default() },
+        crate::LayerGroup { id: 5001, name: "Child".into(), parent: Some(5000), members: vec![crate::LayerId(100), crate::LayerId(102)], ..Default::default() },
+    ];
+    assert!(c.normalize_layer_groups());
+    assert!(c.layer_groups_are_valid());
+    for g in &c.layer_groups {
+        assert_eq!(g.members, [crate::LayerId(100), crate::LayerId(101), crate::LayerId(102)]);
+    }
+    crate::essential::offset_ids(&mut p, 10000);
+    let c = p.comp(crate::ItemId(cid.0 + 10000)).unwrap();
+    assert!(c.layer_groups_are_valid());
+    assert_eq!(c.layer_groups[1].parent, Some(15000));
+    assert_eq!(c.layer_group(crate::LayerId(10100)).unwrap().id, 15001);
+}
+
+#[test]
 fn paths_resolve() {
     let (p, cid) = project_with_layer();
     let l = &p.comp(cid).unwrap().layers[0];
@@ -252,6 +462,38 @@ fn item_users_count_layers_in_every_comp() {
     assert_eq!(p.item_users(pre), vec![(main, 1)]);
     assert!(p.item_users(unused).is_empty());
     assert!(p.item_users(main).is_empty());
+}
+
+#[test]
+fn group_spans_merge_overlaps_and_keep_gaps() {
+    use crate::{LayerGroup, LayerId};
+    let (mut p, cid) = project_with_layer();
+    let template = p.comp(cid).unwrap().layers[0].clone();
+    let s = Tick::from_seconds_f64;
+    let comp = p.comp_mut(cid).unwrap();
+    comp.layers.clear();
+    // A, B overlap; C touches B; in the pause E is zero length and F inverted (damaged file), so
+    // neither may add a segment; D sits after the pause and forms the inner group.
+    for (id, a, b) in [(1, 0.0, 2.0), (2, 1.5, 3.0), (3, 3.0, 3.5), (5, 4.0, 4.0), (6, 4.3, 3.8), (4, 4.5, 6.0)] {
+        let mut l = template.clone();
+        l.id = LayerId(id);
+        l.in_point = s(a);
+        l.out_point = s(b);
+        comp.layers.push(l);
+    }
+    let ids = |v: &[u64]| v.iter().map(|i| LayerId(*i)).collect::<Vec<_>>();
+    comp.layer_groups = vec![
+        LayerGroup { id: 100, name: "G".into(), members: ids(&[1, 2, 3, 5, 6, 4]), ..Default::default() },
+        LayerGroup { id: 101, name: "H".into(), members: ids(&[4]), parent: Some(100), ..Default::default() },
+    ];
+    let comp = p.comp(cid).unwrap();
+    assert_eq!(comp.layer_group_spans(100, &[]), vec![(s(0.0), s(3.5)), (s(4.5), s(6.0))]);
+    assert_eq!(comp.layer_group_spans(101, &[]), vec![(s(4.5), s(6.0))]);
+    assert_eq!(comp.layer_group_spans(100, &[LayerId(4)]), vec![(s(0.0), s(3.5))]);
+    assert!(comp.layer_group_spans(999, &[]).is_empty());
+    let mut damaged = comp.clone();
+    damaged.layer_groups[0].members.push(LayerId(77));
+    assert_eq!(damaged.layer_group_spans(100, &[]), comp.layer_group_spans(100, &[]));
 }
 
 /// A project of `n` empty comps; `links` adds a precomp layer of comp `b` inside comp `a`

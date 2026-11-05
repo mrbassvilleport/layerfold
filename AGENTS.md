@@ -1,7 +1,7 @@
-# EffectCraft — rules for agents and contributors
+# Layerfold: rules for contributors and agents
 
-These rules apply to every human and AI contributor. `CLAUDE.md` holds the working instructions; this
-file holds the rules that must never be broken. When the two disagree, this file wins.
+These rules apply to every human and AI contributor. They come from EffectCraft, the project Layerfold
+is based on, with the changes a modified version needs.
 
 ## Never crash
 
@@ -73,15 +73,14 @@ reproduce an image (for example, point lists traced from someone else's icon).
 5. **Local reference material stays local.** After Effects reference screenshots and notes live only in
    `plan/aftereffects/` (gitignored). They must never be committed, bundled, embedded, traced or shipped.
 6. **Code-drawn assets** (icons in `crates/ui-egui/src/icons.rs`, procedural demo content in
-   `crates/engine/src/demo.rs`, generators in `crates/effects`) are original work under the project licence
+   `crates/engine/src/home/demo.rs`, generators in `crates/effects`) are original work under the project licence
    and are listed in `ATTRIBUTION.md`.
 7. **When in doubt, leave it out** and draw or generate it yourself.
-8. **The one exception: first-party ArtCraft brand marks.** The ArtCraft name and logos in `docs/brand/`
-   are trademarks of the ArtCraft Team, not open source, usable only unmodified and only in the context of
-   EffectCraft under `docs/brand/LICENSE-brand.txt` (forks and modified versions must remove them). They still
-   need a sidecar and an `ATTRIBUTION.md` row (licence `LicenseRef-ArtCraft-Trademark`). No other
-   non-open asset is allowed, and this exception never covers third-party marks (Adobe, Discord, GitHub
-   and other logos stay out; draw a generic icon instead).
+8. **No ArtCraft brand marks.** The ArtCraft name and logos are trademarks of the ArtCraft Team, and
+   upstream's terms require modified versions to remove them (`docs/brand/LICENSE-brand.txt` in upstream).
+   Layerfold may say in plain text that it is based on EffectCraft by the ArtCraft team, and nothing more.
+   When merging an update, delete `docs/brand/` again. Third-party marks (Adobe, Discord, GitHub and other
+   logos) stay out too; draw a generic icon instead.
 
 ## 2. Clean-room code
 
@@ -102,8 +101,18 @@ reproduce an image (for example, point lists traced from someone else's icon).
 
 ## 3. Engineering rules
 
-See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
-a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
+- **Pure Rust.** Media codecs come from FilmCraft crates, as git dependencies behind `crates/media`.
+- **Layering** (`cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd/cpal; L0–L4
+  build for wasm32.
+- **Exact time:** `effectcraft_time::Tick` (254 016 000 000/s). Keyframe times are layer time.
+- **Property tree:** everything animatable is a `Property` in the layer's `PropGroup` tree, addressed
+  by paths (`transform/position`, `effects/#1/blurriness`, `@uid`).
+- **Everything is a command** (`crates/engine`): id, label, menu path, shortcut, params, enabled(),
+  run(). UI, CLI, control channel and MCP dispatch by id.
+- **Everything is agent-drivable:** every interactive widget registers an automation id; UI state is serde.
+- **Quality gates** before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, layers,
+  assets, wasm). On Windows use `editor/scripts/cargo.ps1 --upstream xtask ci`.
+- **New workspace crates** include `[lints] workspace = true` in `Cargo.toml`.
 
 - **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 
@@ -140,8 +149,3 @@ as PhotoCraft does with `cargo xtask corpus`.
   `@username` anyway.
 - Never add, edit, guess or copy anyone else's entry or name (not from git config, commit authors or
   GitHub profiles). Never hand-edit `contributors.json`.
-
-## CI workflows
-- Workflows in `.github/workflows/` call the shared workflows in [`storytold/craft-common-actions`](https://github.com/storytold/craft-common-actions) at `@main`, with their inputs and secrets. No other jobs: if no shared workflow does what's needed, it doesn't go here.
-- Don't add or change CI in a feature or fix PR. If the existing workflows can't build or test a change, link an existing craft-common-actions issue or PR, or open a new issue, or a PR only for a small fix that is safe for every app and does not increase CI time.
-- Some workflow files here still run their own jobs. Don't add to them. Moving a job into craft-common-actions is its own task, never part of another PR, and the job stays here until a shared workflow runs it.

@@ -25,14 +25,21 @@ pub(crate) fn fx2c(ctx: &EvalCtx, layer: &Layer) -> Mat3 {
     from_effect_space(ctx, layer, l2c(ctx, layer).0)
 }
 
-/// The selected, unlocked layers of `comp` other than `layer` (when `layer` is one of them): a
-/// handle or Rotation tool drag on one changes them all.
+/// A selected layer the viewer edits: it shows controls and joins drags of other selected layers.
+/// The eye (its own or a folder's) hides an AV layer's pixels, not its controls (#1769); hidden
+/// Nulls, cameras and lights have none. Any lock, own or a folder's, excludes the layer.
+pub(crate) fn viewer_editable(comp: &Comp, l: &Layer) -> bool {
+    (comp.layer_effectively_visible(l.id) || l.source.is_av()) && !comp.layer_effectively_locked(l.id)
+}
+
+/// The selected, viewer-editable layers of `comp` other than `layer` (when `layer` is one of
+/// them): a handle or Rotation tool drag on one changes them all.
 pub(super) fn selected_others<'a>(app: &EffectcraftApp, comp: &'a Comp, layer: LayerId) -> Vec<&'a Layer> {
     let sel = &app.session.state.selected_layers;
     if !sel.contains(&layer) {
         return vec![];
     }
-    sel.iter().filter(|id| **id != layer).filter_map(|id| comp.layer(*id)).filter(|l| !l.switches.locked && l.transform().is_some()).collect()
+    sel.iter().filter(|id| **id != layer).filter_map(|id| comp.layer(*id)).filter(|l| viewer_editable(comp, l) && l.transform().is_some()).collect()
 }
 
 /// The least homogeneous depth (`w`: the distance in front of a perspective camera in pixels, 1

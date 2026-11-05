@@ -284,6 +284,50 @@ fn set_param(s: &mut Session, layer: LayerId, path: &str, v: serde_json::Value) 
     s.execute("prop.set", json!({"layer": layer.0, "path": format!("effects/#1/{path}"), "value": v})).unwrap();
 }
 
+/// Automatic re-analysis waits while the layer's folder is locked, and runs once it is unlocked.
+#[test]
+fn automatic_warp_analysis_waits_for_an_unlocked_folder() {
+    let (mut s, clip, solid) = setup(shaky);
+    s.execute("edit.clear", json!({"layers": [solid.0]})).unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    s.execute("effect.apply", json!({"effect": "Warp Stabilizer"})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    s.poll_warp(true);
+    assert!(!s.is_warp_analyzing(), "no analysis on a locked folder");
+    assert!(s.warp_pending.iter().any(|(_, l, _)| *l == clip), "still queued");
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": false})).unwrap();
+    s.poll_warp(true);
+    assert!(s.is_warp_analyzing() || s.warp_job.is_some(), "runs once unlocked");
+    while s.is_warp_analyzing() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_warp(false);
+    }
+}
+
+/// A folder locked while Warp Stabilizer analyses keeps the effect unanalysed, and says so as an error.
+#[test]
+fn warp_result_rejected_by_a_folder_lock_is_an_error() {
+    let (mut s, clip, solid) = setup(shaky);
+    s.execute("edit.clear", json!({"layers": [solid.0]})).unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    s.execute("effect.apply", json!({"effect": "Warp Stabilizer"})).unwrap();
+    s.execute_checked("warp.analyze", json!({"layer": clip.0})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    let t0 = std::time::Instant::now();
+    while s.is_warp_analyzing() {
+        assert!(t0.elapsed().as_secs() < 120);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_warp(false);
+    }
+    s.poll_warp(false);
+    let st = s.execute_checked("warp.status", json!({"layer": clip.0})).unwrap();
+    assert_eq!(st["analyzed"], false);
+    let rejected = s.events.iter().any(|e| matches!(e, crate::Event::Toast { message, error: true } if message.contains("lock")));
+    assert!(rejected, "{:?}", s.events);
+}
+
 /// Stabilize, Crop, Auto-scale (the default) hides the borders; Crop leaves an opaque centre.
 fn assert_crop_framing(s: &mut Session, clip: LayerId) {
     set_param(s, clip, "borders/framing", json!(2));

@@ -28,6 +28,14 @@ struct Snapshot {
     focused: PanelKind,
     maximized: Option<PanelKind>,
     saved_workspaces: BTreeMap<String, Workspace>,
+    /// The Timeline's button for video frames on all layers: someone who turned them off for the
+    /// load they cost doesn't want them decoding again at every start.
+    #[serde(default = "frames_on")]
+    layer_frames: bool,
+}
+
+fn frames_on() -> bool {
+    true
 }
 
 impl Snapshot {
@@ -39,6 +47,7 @@ impl Snapshot {
             focused: ui.focused,
             maximized: ui.maximized,
             saved_workspaces: ui.saved_workspaces.clone(),
+            layer_frames: ui.timeline.layer_frames,
         }
     }
 
@@ -48,6 +57,7 @@ impl Snapshot {
         ui.focused = self.focused;
         ui.maximized = self.maximized;
         ui.saved_workspaces = self.saved_workspaces;
+        ui.timeline.layer_frames = self.layer_frames;
         // A native window's place is made safe to hand to the windowing system.
         for workspace in std::iter::once(&mut ui.dock).chain(ui.saved_workspaces.values_mut()) {
             for window in &mut workspace.layout.floating {
@@ -163,6 +173,7 @@ impl WorkspaceStore {
             || self.saved.focused != ui.focused
             || self.saved.maximized != ui.maximized
             || self.saved.saved_workspaces != ui.saved_workspaces
+            || self.saved.layer_frames != ui.timeline.layer_frames
     }
 
     pub(crate) fn save(&mut self, config: Option<&dyn ConfigStore>, ui: &UiState) -> Result<bool, String> {

@@ -289,17 +289,17 @@ pub fn default_folder() -> PathBuf {
     if cfg!(target_os = "macos")
         && let Some(h) = &home
     {
-        return h.join("Library/Caches/EffectCraft/Disk Cache");
+        return h.join("Library/Caches/Layerfold/Disk Cache");
     }
     if cfg!(windows)
         && let Some(l) = std::env::var_os("LOCALAPPDATA")
     {
-        return PathBuf::from(l).join("EffectCraft").join("Disk Cache");
+        return PathBuf::from(l).join("Layerfold").join("Disk Cache");
     }
     if let Some(x) = std::env::var_os("XDG_CACHE_HOME") {
-        return PathBuf::from(x).join("effectcraft/disk-cache");
+        return PathBuf::from(x).join("layerfold/disk-cache");
     }
-    home.map(|h| h.join(".cache/effectcraft/disk-cache")).unwrap_or_else(|| std::env::temp_dir().join("effectcraft-disk-cache"))
+    home.map(|h| h.join(".cache/layerfold/disk-cache")).unwrap_or_else(|| std::env::temp_dir().join("effectcraft-disk-cache"))
 }
 
 impl DiskCache {
@@ -873,6 +873,11 @@ fn file_stamp(h: &mut Hash128, path: &str, virtual_id: Option<VirtualFileId<'_>>
 }
 
 fn footage_stamp(h: &mut Hash128, f: &effectcraft_project::Footage, virtual_id: Option<VirtualFileId<'_>>) {
+    // A missing file may be one the project may not reach (a share on another computer): even
+    // asking for its size would connect there.
+    if f.missing {
+        return;
+    }
     file_stamp(h, &f.path, virtual_id);
     for p in &f.sequence {
         file_stamp(h, p, virtual_id);

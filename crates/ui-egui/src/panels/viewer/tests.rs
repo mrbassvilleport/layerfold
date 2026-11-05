@@ -1,6 +1,75 @@
 use super::*;
 use effectcraft_engine::geom::{Mat4, vec3};
 
+#[test]
+fn nested_group_masters_gate_picking_and_preselected_transform_handles() {
+    use effectcraft_engine::project::LayerGroup;
+
+    let mut s = effectcraft_engine::Session::default();
+    s.execute("comp.new", json!({"name":"Nested picking","width":64,"height":64,"duration":4})).unwrap();
+    for name in ["Outside", "Child", "Grandchild"] {
+        s.execute("layer.newSolid", json!({"name":name,"color":"#406080","width":32,"height":32})).unwrap();
+    }
+    let ids: Vec<_> = s.active_comp().unwrap().layers.iter().map(|l| l.id).collect();
+    s.execute("layer.select", json!({"layers":ids.iter().map(|id| id.0).collect::<Vec<_>>()})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let group = s.project.next_id;
+    s.edit("Nested fixture", None, |p, _| {
+        p.next_id += 2;
+        p.comp_mut(cid).unwrap().layer_groups = vec![
+            LayerGroup { id: group, name: "Root".into(), members: vec![ids[0], ids[1]], ..Default::default() },
+            LayerGroup { id: group + 1, name: "Inner".into(), parent: Some(group), members: vec![ids[0]], ..Default::default() },
+        ];
+        Ok(())
+    })
+    .unwrap();
+    for flags in [json!({"locked":true}), json!({"locked":false,"video":false}), json!({"video":true})] {
+        let mut params = flags;
+        params["group"] = json!(group);
+        s.execute("layer.groupUpdate", params).unwrap();
+        let c = s.active_comp().unwrap();
+        let ctx = EvalCtx::new(&s.project, cid, c, s.time());
+        let enabled = !c.layer_groups[0].locked && c.layer_groups[0].video;
+        let expected = if enabled { ids[0] } else { ids[2] };
+        assert_eq!(layer_at(&ctx, [32.0, 32.0]).map(|l| l.id), Some(expected));
+        let eligible: Vec<_> = selectable_layers(c, s.time()).map(|l| l.id).collect();
+        assert_eq!(eligible, if enabled { ids.clone() } else { vec![ids[2]] });
+        let app = EffectcraftApp::new(s);
+        let c = app.session.active_comp().unwrap();
+        let others: Vec<_> = selected_others(&app, c, ids[2]).into_iter().map(|l| l.id).collect();
+        // A hidden folder hides pixels, not the controls of its AV members (#1769); a lock excludes them.
+        assert_eq!(others, if c.layer_groups[0].locked { vec![] } else { vec![ids[0], ids[1]] });
+        assert!(c.layers.iter().all(|l| !l.switches.locked && l.switches.video));
+        s = app.session;
+    }
+    s.execute("layer.setSwitch", json!({"layer":ids[0].0,"switch":"solo","value":true})).unwrap();
+    s.execute("layer.groupUpdate", json!({"group":group,"video":false})).unwrap();
+    let c = s.active_comp().unwrap();
+    let ctx = EvalCtx::new(&s.project, cid, c, s.time());
+    // Like a soloed layer with its own Video off, a hidden folder's solo child still hides the rest.
+    assert_eq!(layer_at(&ctx, [32.0, 32.0]).map(|l| l.id), None, "a hidden folder's solo child hides the outside layer");
+    let targets = effectcraft_engine::viewer::targets(&ctx, &[], effectcraft_engine::viewer::SnapOptions { layers: true, ..Default::default() });
+    assert!(targets.iter().all(|t| !matches!(t.source, effectcraft_engine::viewer::SnapSource::Layer(_))));
+
+    s.edit("Trim solo child", None, |p, _| {
+        p.comp_mut(cid).unwrap().layer_mut(ids[0]).unwrap().in_point = Tick::from_seconds_f64(1.0);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.groupUpdate", json!({"group":group,"video":true})).unwrap();
+    let c = s.active_comp().unwrap();
+    assert_eq!(selectable_layers(c, Tick::ZERO).count(), 0, "Solo excludes other layers before the child's in point");
+    let ctx = EvalCtx::new(&s.project, cid, c, Tick::ZERO);
+    let opts = effectcraft_engine::viewer::SnapOptions { layers: true, ..Default::default() };
+    assert!(effectcraft_engine::viewer::targets(&ctx, &[], opts).iter().all(|t| !matches!(t.source, effectcraft_engine::viewer::SnapSource::Layer(_))));
+    s.execute("layer.groupUpdate", json!({"group":group+1,"video":false})).unwrap();
+    let c = s.active_comp().unwrap();
+    assert_eq!(selectable_layers(c, Tick::ZERO).count(), 0, "a hidden inner folder keeps the Solo");
+    let ctx = EvalCtx::new(&s.project, cid, c, Tick::ZERO);
+    assert_eq!(layer_at(&ctx, [32.0, 32.0]).map(|l| l.id), None);
+    assert!(effectcraft_engine::viewer::targets(&ctx, &[], opts).iter().all(|t| !matches!(t.source, effectcraft_engine::viewer::SnapSource::Layer(_))));
+}
+
 /// #1544: Shift-clicking with the Pen keeps the new segment horizontal, vertical or diagonal.
 #[test]
 fn pen_shift_click_keeps_the_segment_at_45_degrees() {

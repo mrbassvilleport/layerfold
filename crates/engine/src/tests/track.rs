@@ -226,6 +226,43 @@ pub(crate) fn rotating_pose(f: u32) -> ([f64; 2], f64, f64) {
     ([160.0 + 1.2 * t, 120.0 - 0.7 * t], 1.5 * t, 1.0 + 0.008 * t)
 }
 
+/// A folder locked while an analysis runs keeps its layers: the results are dropped, and
+/// Apply refuses a target inside a locked folder.
+#[test]
+fn a_folder_locked_during_analysis_keeps_its_layers() {
+    let (mut s, clip, solid) = setup(patch_frames(rotating_pose));
+    s.execute("track.new", json!({"kind": "transform"})).unwrap();
+    let (c, _, _) = rotating_pose(0);
+    s.execute("track.setPoint", json!({"point": 1, "center": c, "featureSize": [26, 26], "searchSize": [56, 56]})).unwrap();
+    let wait = |s: &mut Session| {
+        let t0 = std::time::Instant::now();
+        while s.is_tracking() {
+            assert!(t0.elapsed().as_secs() < 120);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            s.poll_track();
+        }
+        s.poll_track();
+    };
+    s.execute("track.analyze", json!({"direction": "forward", "end": 0.6})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    let before = serde_json::to_value(s.active_comp().unwrap().layer(clip).unwrap()).unwrap();
+    wait(&mut s);
+    assert_eq!(serde_json::to_value(s.active_comp().unwrap().layer(clip).unwrap()).unwrap(), before, "no keys written into a locked folder");
+    let stopped = s.events.iter().any(|e| matches!(e, crate::Event::Toast { message, error: true } if message.contains("locked")));
+    assert!(stopped, "the analysis reports why it stopped: {:?}", s.events);
+    // Unlocked: analyse, then lock the target's folder and Apply.
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": false})).unwrap();
+    s.execute("time.set", json!({"time": 0})).unwrap();
+    s.execute("track.analyze", json!({"direction": "forward", "end": 0.6})).unwrap();
+    wait(&mut s);
+    let target = s.execute("layer.group", json!({"layers": [solid.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": target, "locked": true})).unwrap();
+    let before = s.project.to_file_json().unwrap();
+    assert!(s.execute("track.apply", json!({})).is_err());
+    assert_eq!(s.project.to_file_json().unwrap(), before);
+}
+
 #[test]
 fn transform_rotation_scale_and_background_job() {
     let (mut s, clip, solid) = setup(patch_frames(rotating_pose));

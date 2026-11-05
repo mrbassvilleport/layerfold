@@ -333,6 +333,7 @@ pub fn checked(s: &Session, command: &str, params: &Value) -> Option<bool> {
                 "adjustment" => sw.adjustment,
                 "threeD" => sw.three_d,
                 "guide" => sw.guide,
+                "frames" => sw.frames,
                 "preserveTransparency" => l.preserve_transparency,
                 _ => return None,
             })
@@ -525,8 +526,8 @@ fn effect_categories() -> Vec<MenuNode> {
 
 /// The After Effects menu layout. Labels use "..." like AE's macOS menus.
 pub const TREE: &str = r#"
-[mac] EffectCraft
-  About EffectCraft... | app.about
+[mac] Layerfold
+  About Layerfold... | app.about
   ---
   Settings...
     General... | app.settings {"page":"general"} | Cmd+Alt+;
@@ -547,11 +548,11 @@ pub const TREE: &str = r#"
     3D... | app.settings {"page":"3d"}
     Scripting & Expressions... | app.settings {"page":"scripting"}
   ---
-  Hide EffectCraft | app.hide
+  Hide Layerfold | app.hide
   Hide Others | app.hideOthers
   Show All | app.showAll
   ---
-  Quit EffectCraft | app.quit
+  Quit Layerfold | app.quit
 File
   New
     New Project | file.newProject
@@ -578,7 +579,7 @@ File
     File... | file.import
     Multiple Files... | file.importMultiple
     Adobe Premiere Pro Project... | file.importTimeline
-    EffectCraft Project... | file.importProject
+    Layerfold Project... | file.importProject
     Placeholder... | file.importPlaceholder
     Solid... | file.importSolid
     Lottie... | file.importLottie
@@ -847,6 +848,7 @@ Layer
     Collapse | layer.setSwitch {"switch":"collapse"}
     Motion Blur | layer.setSwitch {"switch":"motionBlur"}
     Adjustment Layer | layer.setSwitch {"switch":"adjustment"}
+    Video Frames on the Layer | layer.setSwitch {"switch":"frames"}
   Transform
     Reset | layer.transform {"op":"reset"}
     Anchor Point... | layer.setTransform {"prop":"anchor"}
@@ -871,6 +873,7 @@ Layer
     Time Stretch... | layer.timeStretch
     Freeze Frame | layer.freezeFrame
     Freeze On Last Frame | layer.freezeOnLastFrame
+    Trim Layer to Source | layer.trimToSource
     Align Video to Data | layer.alignVideoToData
   Frame Blending
     Off | layer.frameBlending {"mode":"off"}
@@ -961,6 +964,10 @@ Layer
     Stroke | layer.style.stroke
   Group Shapes | path.groupShapes
   Ungroup Shapes | path.ungroupShapes
+  ---
+  Group Layers | layer.group
+  Ungroup Layers | layer.ungroup
+  Remove from Group | layer.groupRemove
   ---
   Arrange
     Bring Layer to Front | layer.arrange {"to":"front"} | Cmd+Shift+]
@@ -1275,7 +1282,7 @@ Window
   VR Comp Editor | window.panel {"panel":"vrCompEditor"}
   @dynamic:scriptPanels
 Help
-  EffectCraft Help... | help.docs {"page":"help"} | F1
+  Layerfold Help... | help.docs {"page":"help"} | F1
   Scripting Help... | help.docs {"page":"scripting"}
   Expression Reference... | help.docs {"page":"expressions"}
   Effect Reference... | help.docs {"page":"effects"}
@@ -1283,21 +1290,15 @@ Help
   Keyboard Shortcuts... | app.keyboardShortcuts
   ---
   In-App Tutorials... | help.inAppTutorials
-  Online Tutorials... | help.onlineTutorials
   ---
   System Compatibility Report... | help.systemReport
   Enable Logging | help.enableLogging
   Reveal Logging File | help.revealLogFile
   ---
-  Join the ArtCraft Discord... | help.discord
-  Provide Feedback... | help.reportIssue
-  ---
-  ArtCraft Website | help.website
-  EffectCraft Home Page | help.appPage
-  EffectCraft on GitHub | help.github
+  Layerfold on GitHub | help.github
   Open Demo Project | file.openDemoProject
   [!mac] ---
-  [!mac] About EffectCraft... | app.about
+  [!mac] About Layerfold... | app.about
 "#;
 
 #[cfg(test)]

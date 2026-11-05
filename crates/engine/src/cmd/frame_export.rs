@@ -45,11 +45,20 @@ fn render_with(s: &Session, project: &Project, comp: ItemId, t: Tick, scale: f64
 fn isolate(s: &Session, cid: ItemId, t: Tick, scale: f64) -> Result<(Image, Vec<Isolated>)> {
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let full = render_with(s, &s.project, cid, t, scale);
-    let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.has_video());
+    // The renderer's Solo and Video rules: a hidden folder hides its layers; their Solo still counts.
+    let any_solo = comp.any_solo();
     let ids: Vec<LayerId> = comp
         .layers
         .iter()
-        .filter(|l| l.has_video() && l.is_active_at(t) && !l.switches.adjustment && !l.switches.guide && !l.environment && (!any_solo || l.switches.solo))
+        .filter(|l| {
+            l.has_video()
+                && comp.layer_group_video_enabled(l.id)
+                && l.is_active_at(t)
+                && !l.switches.adjustment
+                && !l.switches.guide
+                && !l.environment
+                && (!any_solo || l.switches.solo)
+        })
         .map(|l| l.id)
         .collect();
     let mut out = vec![];
@@ -239,4 +248,26 @@ pub fn specs() -> Vec<CommandSpec> {
             save_exr
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A layer in a hidden folder is not drawn, so it is no layer of the file; like a soloed
+    /// layer with its own Video off, its Solo still hides the others (`Comp::any_solo`).
+    #[test]
+    fn a_hidden_folder_keeps_its_layers_out_of_the_layered_frame() {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": "Layers", "width": 32, "height": 32, "duration": 1})).unwrap();
+        s.execute("layer.newSolid", json!({"name": "A", "color": "#ff0000", "width": 32, "height": 32})).unwrap();
+        let b = s.execute("layer.newSolid", json!({"name": "B", "color": "#0000ff", "width": 16, "height": 16})).unwrap()["layer"].as_u64().unwrap();
+        let group = s.execute("layer.group", json!({"layers": [b]})).unwrap()["group"].as_u64().unwrap();
+        s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+        let cid = s.active_comp_id().unwrap();
+        let names = |s: &Session| isolate(s, cid, Tick::ZERO, 1.0).unwrap().1.into_iter().map(|l| l.name).collect::<Vec<_>>();
+        assert_eq!(names(&s), vec!["A"]);
+        s.execute("layer.setSwitch", json!({"layers": [b], "switch": "solo", "value": true})).unwrap();
+        assert!(names(&s).is_empty(), "a Solo inside a hidden folder still drops the other layers");
+    }
 }

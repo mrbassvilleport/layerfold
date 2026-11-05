@@ -69,12 +69,13 @@ fn motion_source(app: &EffectcraftApp) -> Option<LayerId> {
     if let Some(l) = chosen.map(LayerId).filter(|l| comp.layer(*l).is_some()) {
         return Some(l);
     }
-    app.session.state.selected_layers.first().copied().filter(|l| comp.layer(*l).is_some_and(trackable))
+    app.session.state.selected_layers.first().copied().filter(|l| comp.layer(*l).is_some_and(|l| trackable(comp, l)))
 }
 
-fn trackable(l: &Layer) -> bool {
+/// A layer in a hidden folder is like one with its own Video off (as `track.new` decides).
+fn trackable(comp: &effectcraft_engine::project::Comp, l: &Layer) -> bool {
     use effectcraft_engine::project::LayerSource;
-    l.has_video() && !matches!(l.source, LayerSource::Text | LayerSource::Shape)
+    l.has_video() && comp.layer_group_video_enabled(l.id) && !matches!(l.source, LayerSource::Text | LayerSource::Shape)
 }
 
 fn label(p: &egui::Painter, pos: Pos2, s: &str, t: &Tokens) {
@@ -178,7 +179,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Motion Source.
     label(&p, pos2(x0, y + 10.0), "Motion Source:", &t);
     let srcs: Vec<(LayerId, String)> =
-        comp.layers.iter().enumerate().filter(|(_, l)| trackable(l)).map(|(i, l)| (l.id, format!("{}. {}", i + 1, l.name))).collect();
+        comp.layers.iter().enumerate().filter(|(_, l)| trackable(&comp, l)).map(|(i, l)| (l.id, format!("{}. {}", i + 1, l.name))).collect();
     let dd = Rect::from_min_size(pos2(field_x, y), vec2(field_w, 20.0));
     let name = source.and_then(|s| srcs.iter().find(|(l, _)| *l == s)).map(|(_, n)| n.clone()).unwrap_or_else(|| "None".into());
     let did = egui::Id::unique("tracker-source-dd");
@@ -849,4 +850,23 @@ pub fn drag_params(d: &Drag, cpt: [f64; 2]) -> serde_json::Value {
 /// The tracked layer and tracker the viewer shows widgets for.
 pub fn viewer_track(app: &EffectcraftApp) -> Option<(LayerId, Uid)> {
     current(app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A layer in a hidden folder is no Motion Source, like one with its own Video off.
+    #[test]
+    fn a_hidden_folder_layer_is_no_motion_source() {
+        let mut s = effectcraft_engine::Session::default();
+        s.execute("comp.new", json!({"name": "T", "width": 64, "height": 64, "duration": 1})).unwrap();
+        let lid = LayerId(s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap()["layer"].as_u64().unwrap());
+        let comp = s.active_comp().unwrap();
+        assert!(trackable(comp, comp.layer(lid).unwrap()));
+        let group = s.execute("layer.group", json!({"layers": [lid.0]})).unwrap()["group"].as_u64().unwrap();
+        s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+        let comp = s.active_comp().unwrap();
+        assert!(!trackable(comp, comp.layer(lid).unwrap()));
+    }
 }

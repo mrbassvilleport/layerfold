@@ -268,7 +268,7 @@ fn selected_twins(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(LayerId, Uid
         .iter()
         .filter(|o| **o != lid)
         .filter_map(|o| comp.layer(*o))
-        .filter(|l| !l.switches.locked)
+        .filter(|l| !comp.layer_effectively_locked(l.id))
         .filter_map(|l| l.props.prop(&path).filter(same_kind).map(|q| (l.id, q.uid)))
         .collect();
     // A parameter of a selected Puppet pin: the same parameter of every other selected pin, on
@@ -278,7 +278,7 @@ fn selected_twins(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(LayerId, Uid
         && s.state.selected_props.contains(&(lid, pin))
     {
         for (ol, ou) in &s.state.selected_props {
-            let Some(other) = comp.layer(*ol).filter(|l| !l.switches.locked) else { continue };
+            let Some(other) = comp.layer(*ol).filter(|l| !comp.layer_effectively_locked(l.id)) else { continue };
             let Some(q) = super::puppet::layer_pins(other).find(|g| g.uid == *ou).and_then(|g| g.get(&pr.match_id)).filter(same_kind) else { continue };
             if (*ol, q.uid) != (lid, uid) && !twins.contains(&(*ol, q.uid)) {
                 twins.push((*ol, q.uid));
@@ -885,7 +885,7 @@ fn select_keys(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     // Keys of locked layers can't be selected (so nothing edits them).
-    sel.retain(|k| comp.layer(k.layer).is_some_and(|l| !l.switches.locked));
+    sel.retain(|k| comp.layer(k.layer).is_some() && !comp.layer_effectively_locked(k.layer));
     if b_p(p, "toggle").unwrap_or(false) {
         // Shift+click: in and out of the selection.
         for k in sel {
@@ -953,7 +953,7 @@ pub(crate) fn editable_keys(comp: &effectcraft_project::Comp, selected: &[KeyRef
 }
 
 pub(crate) fn key_layer_editable(comp: &effectcraft_project::Comp, layer: LayerId) -> bool {
-    comp.layer(layer).is_some_and(|layer| !layer.switches.locked)
+    comp.layer(layer).is_some() && !comp.layer_effectively_locked(layer)
 }
 
 /// Apply `f` to every selected key; keeps the selection pointing at moved keys.
@@ -968,15 +968,15 @@ pub(crate) fn edit_keys(s: &mut Session, label: &str, merge: Option<&str>, f: im
             groups.entry((k.layer, k.prop)).or_default().push(k.time);
         }
         for ((lid, uid), times) in groups {
-            let Some(layer) = comp.layer_mut(lid) else { continue };
-            // A locked layer's keys stay as they are, and stay selected.
-            if layer.switches.locked {
+            // A locked layer's keys stay as they are, and stay selected; so do a locked group's.
+            if comp.layer_effectively_locked(lid) {
                 for time in times {
                     let r = KeyRef { layer: lid, prop: uid, time };
                     remapped.insert(r, r);
                 }
                 continue;
             }
+            let Some(layer) = comp.layer_mut(lid) else { continue };
             let Some(pr) = layer.props.find_mut(uid) else { continue };
             // Process each stored key once, in an order that avoids collisions when moving.
             let mut idx: Vec<(usize, Tick)> = times.iter().filter_map(|t| key_at(&pr.keys, *t).map(|i| (i, *t))).collect();
@@ -1031,9 +1031,10 @@ pub(crate) fn key_gesture(
     d: Tick,
     absolute: bool,
 ) -> (Vec<KeyRef>, Tick, Option<std::sync::Arc<effectcraft_project::Project>>) {
-    let gesture = merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m)) && s.key_move.as_ref().map(|g| g.merge.as_str()) == merge;
-    match (&s.key_move, s.history.undo.last()) {
-        (Some(g), Some((_, base))) if gesture => (g.from.clone(), if absolute { d } else { g.total + d }, Some(base.clone())),
+    let gesture = merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m))
+        && s.key_move.as_ref().is_some_and(|g| Some(g.merge.as_str()) == merge && g.revision == s.revision);
+    match &s.key_move {
+        Some(g) if gesture => (g.from.clone(), if absolute { d } else { g.total + d }, Some(g.base.clone())),
         _ => (s.state.selected_keys.clone(), d, None),
     }
 }
@@ -1049,12 +1050,12 @@ pub(crate) fn move_key_refs(comp: &mut effectcraft_project::Comp, from: &[KeyRef
         groups.entry((k.layer, k.prop)).or_default().push(k.time);
     }
     for ((lid, uid), times) in groups {
-        let Some(l) = comp.layer_mut(lid) else { continue };
         let at = |time| KeyRef { layer: lid, prop: uid, time };
-        if l.switches.locked {
+        if comp.layer_effectively_locked(lid) {
             remapped.extend(times.iter().map(|t| (at(*t), at(*t))));
             continue;
         }
+        let Some(l) = comp.layer_mut(lid) else { continue };
         let moves: Vec<(Tick, Tick)> = times.iter().map(|t| Ok((*t, to(l, *t)?))).collect::<Result<_>>()?;
         let Some(pr) = l.props.find_mut(uid) else { continue };
         // Take the moving keys out, then put them back at their new times.
@@ -1101,7 +1102,8 @@ pub(crate) fn layer_shift(l: &Layer, d: Tick) -> Tick {
 pub(crate) fn shift_keys(s: &mut Session, label: &str, merge: Option<&str>, d: Tick) -> Result<Value> {
     let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
     let (from, total, base) = key_gesture(s, merge, d, false);
-    let next = merge.map(|m| crate::KeyMove { merge: m.to_string(), from: from.clone(), total });
+    let start = base.clone().unwrap_or_else(|| s.project.clone());
+    let next = merge.map(|m| crate::KeyMove { merge: m.to_string(), from: from.clone(), total, revision: 0, base: start });
     let moved = s.edit(label, merge, |proj, st| {
         if let Some(b) = base {
             *proj = (*b).clone();
@@ -1112,7 +1114,7 @@ pub(crate) fn shift_keys(s: &mut Session, label: &str, merge: Option<&str>, d: T
         Ok(json!(st.selected_keys.len()))
     })?;
     // Only a step that applied counts towards the drag.
-    s.key_move = next;
+    s.key_move = next.map(|g| crate::KeyMove { revision: s.revision, ..g });
     Ok(moved)
 }
 
@@ -1131,7 +1133,7 @@ fn delete_keys(s: &mut Session, _: &Value) -> Result<Value> {
         let mut changed = std::collections::BTreeSet::new();
         for k in &sel {
             // A layer locked after its keys were selected keeps them (the selection stays too).
-            if comp.layer(k.layer).is_some_and(|l| l.switches.locked) {
+            if comp.layer_effectively_locked(k.layer) {
                 continue;
             }
             if let Some(pr) = comp.layer_mut(k.layer).and_then(|l| l.props.find_mut(k.prop))
@@ -1147,7 +1149,7 @@ fn delete_keys(s: &mut Session, _: &Value) -> Result<Value> {
                 }
             }
         }
-        st.selected_keys.retain(|k| comp.layer(k.layer).is_some_and(|l| l.switches.locked));
+        st.selected_keys.retain(|k| comp.layer(k.layer).is_some() && comp.layer_effectively_locked(k.layer));
         for (layer, prop) in changed {
             sync_polystar_property(proj, st, cid, layer, prop, time)?;
         }

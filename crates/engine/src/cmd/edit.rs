@@ -71,6 +71,7 @@ fn select_all(s: &mut Session, _: &Value) -> Result<Value> {
     // Locked layers (and shy layers while they are hidden) can't be selected.
     if let Some(c) = s.active_comp() {
         s.state.selected_layers = c.layers.iter().filter(|l| super::selectable(c, l)).map(|l| l.id).collect();
+        s.state.active_layer = s.state.selected_layers.first().copied();
     }
     Ok(json!(s.state.selected_layers.len()))
 }
@@ -94,6 +95,15 @@ fn relink_copies(comp: &mut Comp, map: &[(LayerId, LayerId)]) {
     for l in comp.layers.iter_mut_where(|l| map.iter().any(|(_, c)| *c == l.id)) {
         l.parent = l.parent.and_then(link);
         l.track_matte = l.track_matte.and_then(|m| link(m.layer).map(|layer| TrackMatte { layer, ..m }));
+    }
+}
+
+/// Copies inherit every containing folder; the edit transaction normalizes stack order.
+pub(crate) fn inherit_layer_groups(comp: &mut Comp, source: LayerId, copy: LayerId) {
+    for group in &mut comp.layer_groups {
+        if group.members.contains(&source) {
+            group.members.push(copy);
+        }
     }
 }
 
@@ -135,7 +145,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     // A deselected layer never keeps an open text edit (#2226): the copies take the selection, so
-    // commit an open edit first, exactly as `text.endEdit` and Deselect All do — one call on the
+    // commit an open edit first, exactly as `text.endEdit` and Deselect All do вЂ” one call on the
     // command path so every route (menu, shortcut, palette, MCP, script) ends the edit and leaves
     // the same final state. Unnamed, the target is the edited layer even when an engine route
     // selected another one meanwhile.
@@ -145,6 +155,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         Some(layer) => layers_or(s, p, &[layer])?,
         None => layers_p(s, p)?,
     };
+    let ids = super::group_unlocked(s, cid, ids, "edit.duplicate")?;
     let new = s.edit("Duplicate", None, |proj, st| {
         let mut next = proj.next_id;
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
@@ -157,6 +168,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
             l.name = comp.unique_layer_name(&l.name);
             created.push(l.id);
             map.push((*id, l.id));
+            inherit_layer_groups(comp, *id, l.id);
             comp.layers.insert(i, l);
         }
         relink_copies(comp, &map);
@@ -243,6 +255,9 @@ fn delete_selection(s: &mut Session, p: &Value) -> Result<Option<Value>> {
 fn clear_layers(s: &mut Session, cid: ItemId, ids: &[LayerId]) -> Result<()> {
     // Children of deleted layers are unparented where they are (like After Effects).
     let comp = s.project.comp(cid).ok_or(crate::EngineError::NoComp)?;
+    if let Some(l) = super::locked_dependant(&s.project, cid, ids) {
+        return Err(super::bad("edit.clear", format!("“{}” in a locked layer group uses this layer; unlock the group in the Timeline", l.name)));
+    }
     let orphans: Vec<LayerId> = comp.layers.iter().filter(|l| !ids.contains(&l.id) && l.parent.is_some_and(|p| ids.contains(&p))).map(|l| l.id).collect();
     let fixes = super::layer::parent_fixes(s, cid, &orphans, None);
     s.edit("Clear", None, |proj, st| {
@@ -401,7 +416,7 @@ fn copy_properties(s: &mut Session) -> Result<Option<Value>> {
 /// selected layers, as one undo step.
 fn paste_properties(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
-    let ids = s.state.selected_layers.clone();
+    let ids = super::group_unlocked(s, cid, s.state.selected_layers.clone(), "edit.paste")?;
     if ids.is_empty() {
         return Err(EngineError::Other("select a layer to paste into".into()));
     }
@@ -617,7 +632,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     let new = s.edit("Paste", None, |proj, st| {
         let mut next = proj.next_id;
         let comp = proj.comp_mut(cid).ok_or(crate::EngineError::NoComp)?;
-        let at = st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0);
+        let at = super::layer::insertion_index(comp, &st.selected_layers, None)?;
         let mut created = vec![];
         let mut map = vec![];
         for (k, mut l) in clip.into_iter().enumerate() {
@@ -674,6 +689,7 @@ fn paste_svg(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn split(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::group_unlocked(s, cid, ids, "edit.split")?;
     let t = s.time();
     // Settings ▸ General ▸ Create Split Layers Above Original Layer.
     let above = s.prefs.general.create_split_layers_above;
@@ -691,6 +707,7 @@ fn split(s: &mut Session, p: &Value) -> Result<Value> {
             b.in_point = t;
             comp.layers[i].out_point = t;
             created.push(b.id);
+            inherit_layer_groups(comp, *id, b.id);
             comp.layers.insert(if above { i } else { i + 1 }, b);
         }
         proj.next_id = next;
@@ -769,6 +786,16 @@ fn work_area_cut(s: &mut Session, p: &Value, extract: bool) -> Result<Value> {
         v => v,
     };
     let gap = b - a;
+    let removed: Vec<LayerId> = comp
+        .layers
+        .iter()
+        .filter(|l| ids.contains(&l.id) && !comp.layer_effectively_locked(l.id) && l.in_point >= a && l.out_point <= b)
+        .map(|l| l.id)
+        .collect();
+    if let Some(l) = super::locked_dependant(&s.project, cid, &removed) {
+        let c = if extract { "edit.extractWorkArea" } else { "edit.liftWorkArea" };
+        return Err(super::bad(c, format!("“{}” in a locked layer group uses a layer in the work area; unlock the group in the Timeline", l.name)));
+    }
     s.edit(if extract { "Extract Work Area" } else { "Lift Work Area" }, None, |proj, st| {
         let mut next = proj.next_id;
         let c = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
@@ -779,7 +806,7 @@ fn work_area_cut(s: &mut Session, p: &Value, extract: bool) -> Result<Value> {
         };
         let mut i = 0;
         while i < c.layers.len() {
-            if !ids.contains(&c.layers[i].id) || c.layers[i].switches.locked {
+            if !ids.contains(&c.layers[i].id) || c.layer_effectively_locked(c.layers[i].id) {
                 i += 1;
                 continue;
             }
@@ -802,7 +829,9 @@ fn work_area_cut(s: &mut Session, p: &Value, extract: bool) -> Result<Value> {
                     shift(&mut tail, Tick::ZERO - gap);
                 }
                 c.layers[i].out_point = a;
+                let (src, copy) = (c.layers[i].id, tail.id);
                 c.layers.insert(i, tail);
+                inherit_layer_groups(c, src, copy);
                 i += 2;
             } else if lin < a {
                 c.layers[i].out_point = a;

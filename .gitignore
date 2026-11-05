@@ -5,3 +5,5 @@ target/
 /log
 .DS_Store
 .claude/worktrees/
+# Installer pick-up folder (editor/scripts/package-msi.ps1)
+/output/

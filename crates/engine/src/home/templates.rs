@@ -820,9 +820,14 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         let dir = footage_dir(s, &name, str_p(p, "footageDir"), project_path);
         footage = extract_footage(s, &mut proj, &entries, &dir)?;
     }
+    // A template file from elsewhere stores paths like a project does, under the same rule.
+    let document = str_p(p, "path");
+    crate::doc_path::resolve_footage(&mut proj, document);
     let cid = main_comp(&proj);
     let poster = cid.and_then(|c| proj.comp(c)).map(|c| c.poster_time).unwrap_or(Tick::ZERO);
     s.replace_project(proj, None);
+    let loaded = std::sync::Arc::clone(&s.project);
+    s.stored_paths.add(&loaded, document);
     s.update_sentinel();
     if let Some(c) = cid {
         s.open_comp(c);
@@ -862,7 +867,7 @@ fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
         "format": TEMPLATE_FORMAT,
         "version": TEMPLATE_VERSION,
         "kind": "project",
-        "generator": format!("EffectCraft {}", env!("CARGO_PKG_VERSION")),
+        "generator": format!("Layerfold {}", env!("CARGO_PKG_VERSION")),
         "name": name,
         "description": str_p(p, "description").unwrap_or_default(),
         "category": str_p(p, "category").filter(|c| !c.is_empty()).unwrap_or("My Templates"),

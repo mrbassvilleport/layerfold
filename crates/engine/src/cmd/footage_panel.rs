@@ -159,6 +159,10 @@ fn edit_into_comp(s: &mut Session, p: &Value, ripple: bool) -> Result<Value> {
         let mut next = proj.next_id;
         let cm = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         if ripple {
+            // Rippling moves or splits every layer from the current time on.
+            if let Some(l) = cm.layers.iter().find(|l| l.out_point > at && super::locked_by_group(cm, l.id)) {
+                return Err(bad(c, format!("“{}” is in a locked layer group; unlock the group to ripple the timeline", l.name)));
+            }
             let mut added = vec![];
             for i in 0..cm.layers.len() {
                 let l = &mut cm.layers[i];
@@ -174,11 +178,13 @@ fn edit_into_comp(s: &mut Session, p: &Value, ripple: bool) -> Result<Value> {
                     b.in_point = at + len;
                     b.out_point += len;
                     b.start_time += len;
-                    added.push((i, b));
+                    added.push((i, l.id, b));
                 }
             }
-            for (i, b) in added.into_iter().rev() {
+            for (i, src, b) in added.into_iter().rev() {
+                let copy = b.id;
                 cm.layers.insert(i, b);
+                super::edit::inherit_layer_groups(cm, src, copy);
             }
         }
         proj.next_id = next;

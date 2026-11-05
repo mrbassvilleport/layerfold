@@ -136,7 +136,7 @@ fn nested(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn locked(c: &Comp, o: Owner) -> bool {
-    matches!(o, Owner::Layer(l) if c.layer(l).is_some_and(|l| l.markers_locked))
+    matches!(o, Owner::Layer(l) if super::locked_by_group(c, l) || c.layer(l).is_some_and(|l| l.markers_locked))
 }
 
 /// Apply the dialog fields in `p` to `m`. `time`/`duration` are comp seconds.
@@ -259,6 +259,9 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "markers.convert";
     let (cid, o) = owner(s, p, c)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
+    if locked(&comp, o) {
+        return Err(bad(c, "the layer's markers are locked"));
+    }
     let i = find_index(&comp, o, p, c)?;
     let m = markers_of(&comp, o).and_then(|v| v.get(i)).cloned().ok_or_else(|| bad(c, "no marker"))?;
     let ct = to_comp_time(&comp, o, m.time);
@@ -269,6 +272,7 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
             None => s.state.selected_layers.iter().copied().filter(|l| comp.layer(*l).is_some()).collect(),
         },
     };
+    let targets = super::group_unlocked(s, cid, targets, c)?;
     if o == Owner::Comp && targets.is_empty() {
         return Err(bad(c, "select the layer to receive the marker (or give `toLayer`)"));
     }
@@ -301,6 +305,7 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
 /// time), skipping ones already there.
 fn update_from_source(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::group_unlocked(s, cid, ids, "layer.updateMarkersFromSource")?;
     let src: Vec<(LayerId, Vec<Marker>)> = {
         let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
         ids.iter()

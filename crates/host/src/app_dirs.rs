@@ -8,8 +8,10 @@
 //!    `%APPDATA%`. The Windows portable zip ships with `portable.txt`; the MSI doesn't. If that
 //!    folder can't be written (read-only medium, Program Files), a warning is logged and the
 //!    platform folder is used.
-//! 3. The platform convention: macOS `~/Library/Application Support/EffectCraft`, Windows
-//!    `%APPDATA%\EffectCraft`, Linux `$XDG_CONFIG_HOME/effectcraft` or `~/.config/effectcraft`.
+//! 3. The platform convention: macOS `~/Library/Application Support/Layerfold`, Windows
+//!    `%APPDATA%\Layerfold`, Linux `$XDG_CONFIG_HOME/layerfold` or `~/.config/layerfold`. Not the
+//!    upstream folder: an official EffectCraft on the same computer keeps its own settings. The
+//!    first launch starts from a copy of that folder, if there is one ([`adopt_upstream_settings`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -50,6 +52,11 @@ pub fn current() -> &'static DataDir {
         if let Some(w) = &d.warning {
             log::warn!("{w}");
         }
+        if let (Mode::Platform, Some(dir), Some(old)) = (d.mode, &d.dir, upstream_platform_dir(&|k| std::env::var_os(k)))
+            && let Err(e) = adopt_upstream_settings(dir, &old)
+        {
+            log::warn!("couldn't copy the settings from {}: {e}", old.display());
+        }
         d
     })
 }
@@ -79,12 +86,57 @@ pub fn resolve(env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -
 pub fn platform_dir(env: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let home = || env("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
+        return home().map(|h| h.join("Library/Application Support/Layerfold"));
+    }
+    if cfg!(target_os = "windows") {
+        return env("APPDATA").map(|a| PathBuf::from(a).join("Layerfold"));
+    }
+    env("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home().map(|h| h.join(".config"))).map(|c| c.join("layerfold"))
+}
+
+/// Where EffectCraft itself keeps its data on this platform.
+fn upstream_platform_dir(env: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let home = || env("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
         return home().map(|h| h.join("Library/Application Support/EffectCraft"));
     }
     if cfg!(target_os = "windows") {
         return env("APPDATA").map(|a| PathBuf::from(a).join("EffectCraft"));
     }
     env("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home().map(|h| h.join(".config"))).map(|c| c.join("effectcraft"))
+}
+
+/// Start `dir` from a copy of `old` when `dir` doesn't exist yet. `old` is never changed. The copy
+/// is finished under a temporary name and then renamed, so an interrupted one is redone next time.
+fn adopt_upstream_settings(dir: &Path, old: &Path) -> std::io::Result<()> {
+    if dir.exists() || !old.is_dir() {
+        return Ok(());
+    }
+    let partial = dir.with_extension("copying");
+    if partial.exists() {
+        std::fs::remove_dir_all(&partial)?;
+    }
+    copy_tree(old, &partial, 0)?;
+    std::fs::rename(&partial, dir)
+}
+
+/// Copy folders and files; links are skipped, and so is anything nested deeper than settings go.
+fn copy_tree(from: &Path, to: &Path, depth: usize) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    if depth >= 16 {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target, depth + 1)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// The first portable marker file in `exe_dir`, if any.
@@ -138,11 +190,11 @@ mod tests {
         assert!(d.warning.is_none());
         let dir = d.dir.unwrap();
         if cfg!(target_os = "macos") {
-            assert_eq!(dir, root.join("home/Library/Application Support/EffectCraft"));
+            assert_eq!(dir, root.join("home/Library/Application Support/Layerfold"));
         } else if cfg!(target_os = "windows") {
-            assert_eq!(dir, root.join("appdata").join("EffectCraft"));
+            assert_eq!(dir, root.join("appdata").join("Layerfold"));
         } else {
-            assert_eq!(dir, root.join("home/.config/effectcraft"));
+            assert_eq!(dir, root.join("home/.config/layerfold"));
         }
         assert!(!exe.join(PORTABLE_DATA_DIR).exists(), "no portable folder without a marker");
         let _ = std::fs::remove_dir_all(&root);
@@ -208,6 +260,41 @@ mod tests {
         let d = resolve(env_of(&[("EFFECTCRAFT_CONFIG_DIR", &custom)]), Some(&exe));
         assert_eq!((d.mode, d.dir), (Mode::Override, Some(custom)));
         assert!(!exe.join(PORTABLE_DATA_DIR).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_first_launch_starts_from_a_copy_of_the_upstream_settings() {
+        let root = temp("adopt");
+        let (old, dir) = (root.join("EffectCraft"), root.join("Layerfold"));
+        std::fs::create_dir_all(old.join("logs")).unwrap();
+        std::fs::write(old.join("settings.json"), b"old").unwrap();
+        std::fs::write(old.join("logs/a.txt"), b"log").unwrap();
+        adopt_upstream_settings(&dir, &old).unwrap();
+        assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), b"old");
+        assert_eq!(std::fs::read(dir.join("logs/a.txt")).unwrap(), b"log");
+        assert!(old.join("settings.json").is_file(), "the upstream folder stays");
+        assert!(!dir.with_extension("copying").exists());
+        // Our own folder wins from then on.
+        std::fs::write(dir.join("settings.json"), b"ours").unwrap();
+        std::fs::write(old.join("settings.json"), b"newer upstream").unwrap();
+        adopt_upstream_settings(&dir, &old).unwrap();
+        assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), b"ours");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_interrupted_copy_is_redone_and_no_upstream_folder_is_fine() {
+        let root = temp("adopt-partial");
+        let (old, dir) = (root.join("EffectCraft"), root.join("Layerfold"));
+        adopt_upstream_settings(&dir, &old).unwrap();
+        assert!(!dir.exists(), "nothing to copy, nothing created");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("settings.json"), b"old").unwrap();
+        std::fs::create_dir_all(dir.with_extension("copying")).unwrap();
+        std::fs::write(dir.with_extension("copying").join("stale"), b"x").unwrap();
+        adopt_upstream_settings(&dir, &old).unwrap();
+        assert!(dir.join("settings.json").is_file() && !dir.join("stale").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

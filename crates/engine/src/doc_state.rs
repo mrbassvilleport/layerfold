@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use effectcraft_project::Project;
+
 use super::{Deserialize, ItemId, Layer, LayerId, Serialize, Tick, Uid, commands, mask_track, media_browser, roto, viewer};
 
 /// A keyframe reference: layer, property uid, key time (layer time).
@@ -17,6 +21,11 @@ pub struct KeyMove {
     pub merge: String,
     pub from: Vec<KeyRef>,
     pub total: Tick,
+    /// [`Session::revision`] after the gesture's last step: any other change in between (a folder
+    /// locked under the same merge key) ends the gesture, so its start snapshot isn't restored.
+    pub revision: u64,
+    /// The project when the gesture started (not the merged undo step's, which can be older).
+    pub base: Arc<Project>,
 }
 
 /// Keyframes of one property on the keyframe clipboard.
@@ -42,6 +51,8 @@ pub struct VertexRef {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CompSelection {
     pub layers: Vec<LayerId>,
+    #[serde(default)]
+    pub active_layer: Option<LayerId>,
     pub props: Vec<(LayerId, Uid)>,
     pub keys: Vec<KeyRef>,
     pub vertices: Vec<VertexRef>,
@@ -66,6 +77,8 @@ pub struct EditorState {
     pub times: std::collections::BTreeMap<ItemId, Tick>,
     /// Layer selection of the active comp. Other comps' selections are in [`Self::comp_selections`].
     pub selected_layers: Vec<LayerId>,
+    #[serde(default)]
+    pub active_layer: Option<LayerId>,
     /// Selections of comps that are not active, keyed by comp id (#1001).
     #[serde(default)]
     pub comp_selections: std::collections::BTreeMap<ItemId, CompSelection>,

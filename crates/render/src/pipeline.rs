@@ -784,7 +784,7 @@ impl<'a> Renderer<'a> {
     pub fn proxy_for(&self, item: ItemId) -> Option<&'a Footage> {
         let it = self.project.item(item)?;
         let px = it.proxy.as_deref()?;
-        (self.opts.proxy.uses(matches!(it.kind, ItemKind::Comp(_)), px.enabled) && px.footage.has_video).then_some(&px.footage)
+        (self.opts.proxy.uses(matches!(it.kind, ItemKind::Comp(_)), px.enabled) && px.footage.has_video && !px.footage.missing).then_some(&px.footage)
     }
 
     /// A decoded frame of `f` as a layer buffer covering `w`×`h` layer pixels (the footage's

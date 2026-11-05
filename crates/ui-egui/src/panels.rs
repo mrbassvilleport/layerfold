@@ -12,6 +12,7 @@ pub mod effects_presets;
 pub mod essential;
 pub mod expr_bar;
 pub mod expr_editor;
+pub mod filmstrip;
 pub mod flowchart;
 pub mod footage_panel;
 pub mod forms;
@@ -365,6 +366,10 @@ pub(crate) fn panel_menu_area(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
                             let _ = app.session.execute("comp.setSwitch", serde_json::json!({"switch": id}));
                             close = true;
                         }
+                    }
+                    if ui.add(egui::Button::new(tr("Show Video Frames on Layers")).selected(app.ui.timeline.layer_frames)).clicked() {
+                        let _ = crate::menus::invoke(app, &ui.ctx().clone(), "timeline.layerFrames", serde_json::json!({}));
+                        close = true;
                     }
                     if ui.button(tr("Composition Settings…")).clicked() {
                         let _ = dialogs::open_comp_settings(app);

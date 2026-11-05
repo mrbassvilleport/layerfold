@@ -1,4 +1,4 @@
-use super::{EngineError, LayerId, Result, Session, Value, b_p, comp_id, json, resolve_layer};
+use super::{EngineError, LayerId, Result, Session, Value, b_p, bad, comp_id, json, resolve_layer};
 
 pub(super) fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = comp_id(s, p)?;
@@ -7,6 +7,15 @@ pub(super) fn select(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Array(a)) => a.iter().filter_map(|v| resolve_layer(comp, v)).collect(),
         Some(v) => resolve_layer(comp, v).into_iter().collect(),
         None => vec![],
+    };
+    let requested_active = if let Some(v) = p.get("active") {
+        let id = resolve_layer(comp, v).ok_or_else(|| bad("layer.select", "unknown active layer"))?;
+        if !ids.contains(&id) {
+            return Err(bad("layer.select", "active layer must be among the selected layers"));
+        }
+        Some(id)
+    } else {
+        None
     };
     let add = b_p(p, "add").unwrap_or(false);
     let toggle = b_p(p, "toggle").unwrap_or(false);
@@ -25,7 +34,11 @@ pub(super) fn select(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     } else {
+        s.state.active_layer = s.active_layer().filter(|id| ids.contains(id)).or_else(|| ids.first().copied());
         select_only(&mut s.state, ids);
+    }
+    if let Some(id) = requested_active {
+        s.state.active_layer = Some(id);
     }
     Ok(json!(s.state.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>()))
 }

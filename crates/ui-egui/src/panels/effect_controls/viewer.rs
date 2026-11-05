@@ -241,6 +241,8 @@ pub fn viewer_hook(
             .layers
             .iter()
             .filter(|l| (selected.contains(&l.id) || point_pick.as_ref().is_some_and(|p| p.layer == l.id.0)) && l.is_active_at(ectx.time))
+            // Same scope as the layer's own box: none on locked layers, including by folder.
+            .filter(|l| crate::panels::viewer::viewer_editable(ectx.comp, l))
         {
             let Some(fx) = layer.effects() else { continue };
             let m = l2c(ectx, layer);

@@ -493,6 +493,7 @@ impl<'a> Renderer<'a> {
     fn apply_track_matte(&self, ctx: &EvalCtx, layer: &Layer, img: &mut Image, matte_img: Option<Image>) {
         let matte = layer.track_matte.and_then(|tm| ctx.comp.layer(tm.layer).filter(|m| m.id != layer.id).map(|m| (m, tm.kind)));
         if let Some((m, kind)) = matte {
+            // Like a matte with its own Video off, a matte in a hidden folder still mattes.
             let mimg = match matte_img {
                 Some(i) if i.width == img.width && i.height == img.height => i,
                 _ => {

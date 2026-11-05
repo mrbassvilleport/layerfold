@@ -240,7 +240,11 @@ pub fn mask_path(kind: &str, centre: [f64; 2], size: [f64; 2]) -> Option<ShapePa
 /// The layer a shape tool draws into when no `layer` is given: the first selected unlocked shape
 /// layer, else none (a new shape layer).
 pub fn selected_shape_target(s: &Session, comp: &Comp) -> Option<LayerId> {
-    s.state.selected_layers.iter().copied().find(|l| comp.layer(*l).is_some_and(|l| matches!(l.source, LayerSource::Shape) && !l.switches.locked))
+    s.state
+        .selected_layers
+        .iter()
+        .copied()
+        .find(|l| comp.layer(*l).is_some_and(|l| matches!(l.source, LayerSource::Shape)) && !comp.layer_effectively_locked(*l))
 }
 
 /// The shape layer a shape tool or the Pen draws into: `layer` (which must be a shape layer),

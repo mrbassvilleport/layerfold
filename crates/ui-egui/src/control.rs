@@ -10,7 +10,7 @@
 //! - `ui.set {tool?, workspace?, theme?, focused?, viewer?: {zoom, res, pan, grid, …}, timeline?: {pps, start, graphEditor, showModes}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy,unit?,source?,pinch?}`
-//! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
+//! - `ui.drag {from:{id|x,y}, to:{id|x,y}, button?, steps?, modifiers?}`: synthetic press-move-release
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
 //! - `ui.viewer.locate {x, y}`: screen point of a comp pixel; `ui.viewer.hit {x, y}`: comp pixel at a screen point
 //! - `ui.timeline.locate {layer, time?}`: screen point of a layer bar (at a comp time)
@@ -477,6 +477,13 @@ fn drag(app: &mut EffectcraftApp, p: &Value) -> Outcome {
         (Err(e), _) | (_, Err(e)) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
         (Err(e), _) | (_, Err(e)) => return err(e),
     };
+    let button = match p.get("button") {
+        None => egui::PointerButton::Primary,
+        Some(Value::String(b)) if b == "left" => egui::PointerButton::Primary,
+        Some(Value::String(b)) if b == "right" => egui::PointerButton::Secondary,
+        Some(Value::String(b)) if b == "middle" => egui::PointerButton::Middle,
+        _ => return err("button must be left, right or middle"),
+    };
     let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).max(2);
     const MAX_PENDING_EVENTS: usize = 4096;
     const MAX_DRAG_STEPS: u64 = 2048;
@@ -490,12 +497,12 @@ fn drag(app: &mut EffectcraftApp, p: &Value) -> Outcome {
     let m = modifiers(p);
     app.synthetic.push(egui::Event::ModifiersChanged(m));
     app.synthetic.push(egui::Event::PointerMoved(a));
-    app.synthetic.push(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: m });
+    app.synthetic.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers: m });
     for i in 1..=steps {
         let f = i as f32 / steps as f32;
         app.synthetic.push(egui::Event::PointerMoved(a + (b - a) * f));
     }
-    app.synthetic.push(egui::Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers: m });
+    app.synthetic.push(egui::Event::PointerButton { pos: b, button, pressed: false, modifiers: m });
     app.synthetic.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
     Outcome::AfterInput
 }
@@ -775,6 +782,7 @@ pub fn inspect(app: &EffectcraftApp, ctx: &egui::Context) -> Value {
         "playing": app.playback.playing,
         "time": app.session.time().seconds(),
         "activeComp": app.session.state.active_comp.map(|i| i.0),
+        "activeLayer": app.session.active_layer().map(|id| id.0),
         "selectedLayers": app.session.state.selected_layers.iter().map(|c| c.0).collect::<Vec<_>>(),
         "selectedKeys": app.session.state.selected_keys.len(),
         "elements": app.auto.previous.len(),

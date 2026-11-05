@@ -9,15 +9,6 @@
 
 pub(crate) mod a11y;
 
-/// EffectCraft as craft-update knows it, with its 128 px icon and accent colour: the update
-/// prompt shows both, and an AppImage's menu entry gets the icon.
-#[cfg(not(target_arch = "wasm32"))]
-pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
-    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.effectcraft.png")),
-    accent: Some([0xe0, 0x36, 0x8f]),
-    ..craft_update::suite::EFFECTCRAFT
-};
-
 pub mod audio;
 pub mod automation;
 pub mod bench;
@@ -249,6 +240,7 @@ pub struct EffectcraftApp {
     pub session: Session,
     pub ui: UiState,
     workspace_store: workspace_state::WorkspaceStore,
+    pub(crate) timeline_groups: std::sync::Mutex<panels::timeline::GroupPathsCache>,
     pub tokens: Tokens,
     pub auto: automation::Registry,
     pub frames: Frames,
@@ -356,6 +348,8 @@ pub struct EffectcraftApp {
     /// Waveform peak summaries per footage item (see `panels::waveform`).
     pub(crate) expression_diagnostics: expression_diagnostics::Diagnostics,
     pub(crate) waveforms: panels::waveform::Cache,
+    /// Video frames on the Timeline's layer bars (see `panels::filmstrip`).
+    pub(crate) filmstrips: panels::filmstrip::Cache,
     /// Last reveal shortcut and when (double-press shortcuts such as LL).
     pub(crate) last_reveal: Option<(String, f64)>,
     /// Settings revision applied to the theme, tooltips and caches.

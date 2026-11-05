@@ -38,3 +38,22 @@ fn effect_drag_highlights_the_layer_under_the_pointer() {
     let lit = rect(&h, "timeline.dropTarget");
     assert!(lit.contains(row_a.center()) && !lit.contains(row_b.center()), "the highlight follows the pointer: {lit:?}");
 }
+
+#[test]
+fn collapsed_folder_is_not_an_effect_target_for_its_hidden_first_child() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name":"Folders","width":640,"height":360,"duration":4})).unwrap();
+    let a = s.execute("layer.newNull", json!({})).unwrap()["layer"].as_u64().unwrap();
+    let b = s.execute("layer.newNull", json!({})).unwrap()["layer"].as_u64().unwrap();
+    let group = s.execute("layer.group", json!({"layers":[a,b]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group":group,"collapsed":true})).unwrap();
+    let before = s.project.to_file_json().unwrap();
+    let mut h = Harness::builder().with_size(vec2(1600., 1000.)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(3);
+    let at = rect(&h, &format!("timeline.folder.{group}.row")).right_center() - vec2(10., 0.);
+    drag_to(&mut h, at);
+    assert!(h.state().auto.find("timeline.dropTarget").is_none(), "a folder header must not expose its hidden child as an effect target");
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+    assert_eq!(h.state().session.project.to_file_json().unwrap(), before);
+}

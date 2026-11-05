@@ -167,6 +167,30 @@ fn not_blank(p: &Project, cid: ItemId, t: Tick) -> bool {
 // ---------------------------------------------------------------- easing math
 
 #[test]
+fn a_hidden_folder_exports_its_layers_hidden_and_its_mattes_working() {
+    let (mut p, cid) = setup();
+    let fill = solid_layer(&mut p, cid, [1.0, 0.0, 0.0], 50, 50);
+    let mut target = solid_layer(&mut p, cid, [0.0, 1.0, 0.0], 50, 50);
+    let mut matte = solid_layer(&mut p, cid, [1.0, 1.0, 1.0], 20, 20);
+    matte.switches.video = false;
+    target.track_matte = Some(TrackMatte { layer: matte.id, kind: MatteKind::Alpha });
+    let (matte_id, target_id) = (matte.id, target.id);
+    let fill_id = push(&mut p, cid, fill);
+    push(&mut p, cid, matte);
+    push(&mut p, cid, target);
+    p.comp_mut(cid).unwrap().layer_groups =
+        vec![effectcraft_project::LayerGroup { id: 1, name: "Hidden".into(), members: vec![fill_id, matte_id], video: false, ..Default::default() }];
+    let res = export_comp(&p, cid, &ExportOptions::default(), &no_read).unwrap();
+    let layers = res.json["layers"].as_array().unwrap();
+    let by_name = |i: usize| &layers[i];
+    assert_eq!(by_name(0)["hd"], json!(true), "a layer in a hidden folder");
+    assert_eq!(by_name(1)["td"], json!(1));
+    assert!(by_name(1).get("hd").is_none(), "a matte in a hidden folder still mattes");
+    assert!(by_name(2).get("hd").is_none(), "the visible target");
+    let _ = target_id;
+}
+
+#[test]
 fn easing_converts_exactly_both_ways() {
     let (mut p, cid) = setup();
     let mut l = solid_layer(&mut p, cid, [1.0, 0.5, 0.0], 40, 40);

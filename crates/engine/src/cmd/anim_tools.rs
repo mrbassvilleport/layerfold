@@ -276,6 +276,10 @@ fn run_on_selection(
         let fr = comp.frame_rate;
         let mut sel = super::anim::locked_selection(comp, &st.selected_keys);
         for ((lid, uid), times) in groups {
+            if comp.layer_effectively_locked(lid) {
+                sel.extend(times.iter().map(|time| KeyRef { layer: lid, prop: uid, time: *time }));
+                continue;
+            }
             let Some(l) = comp.layer_mut(lid) else { continue };
             let lc = l.clone();
             let to_comp = |t: Tick| lc.comp_time(t);

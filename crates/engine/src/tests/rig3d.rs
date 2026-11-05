@@ -154,6 +154,17 @@ fn stereo_rig_maths() {
     assert!(close3([q1.x, q1.y, q1.z], [0.0, 0.0, 450.0], 1e-9), "{q1:?}");
 }
 
+/// A camera at the top of its folder: the orbit null, inserted above it, joins the folder.
+#[test]
+fn an_orbit_null_joins_the_camera_folder() {
+    let mut s = session();
+    let cam = camera(&mut s);
+    let group = s.execute("layer.group", json!({"layers": [cam]})).unwrap()["group"].as_u64().unwrap();
+    let nid = s.execute("camera.orbitNull", json!({})).unwrap()["null"].as_u64().unwrap();
+    let c = s.active_comp().unwrap();
+    assert_eq!(c.layer_group(LayerId(nid)).map(|g| g.id), Some(group));
+}
+
 #[test]
 fn orbit_null_parents_the_camera_at_its_point_of_interest() {
     let mut s = session();

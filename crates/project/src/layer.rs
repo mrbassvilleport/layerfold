@@ -159,6 +159,14 @@ pub struct Switches {
     pub adjustment: bool,
     pub three_d: bool,
     pub guide: bool,
+    /// The Timeline draws (and decodes) this footage layer's video frames on its bar. Not part of
+    /// the picture, but kept with the project so a layer turned off stays off when it's reopened.
+    #[serde(default = "frames_default")]
+    pub frames: bool,
+}
+
+fn frames_default() -> bool {
+    true
 }
 
 impl Default for Switches {
@@ -178,22 +186,23 @@ impl Default for Switches {
             adjustment: false,
             three_d: false,
             guide: false,
+            frames: true,
         }
     }
 }
 
-// What a frame's pixels depend on. Caches key on it: the Audio, Lock and Shy switches and Hide
+// What a frame's pixels depend on. Caches key on it: the Audio, Lock, Shy and Frames switches and Hide
 // Shy Layers don't change pixels, so toggling them keeps cached frames (#103).
 
 impl Switches {
-    /// These switches with Audio, Lock and Shy at their defaults.
+    /// These switches with Audio, Lock, Shy and Frames at their defaults.
     pub fn pixels(&self) -> Switches {
-        Switches { audio: true, locked: false, shy: false, ..self.clone() }
+        Switches { audio: true, locked: false, shy: false, frames: true, ..self.clone() }
     }
 }
 
 impl Layer {
-    /// Draws the same pixels as `o`: equal but for the Audio, Lock and Shy switches.
+    /// Draws the same pixels as `o`: equal but for the Audio, Lock, Shy and Frames switches.
     pub fn same_pixels(&self, o: &Layer) -> bool {
         self.same_pixels_with(o, true)
     }
@@ -339,6 +348,21 @@ impl Layer {
     /// Comp time for a layer time.
     pub fn comp_time(&self, layer_t: Tick) -> Tick {
         if (self.stretch - 100.0).abs() < 1e-9 { self.start_time + layer_t } else { self.start_time + Tick((layer_t.0 as f64 * self.stretch / 100.0) as i64) }
+    }
+
+    /// The comp-time span `[lo, hi)` the layer's source covers, for a comp with frames of `frame`:
+    /// `None` when the source has no length of its own (solids, stills) or time remapping decides
+    /// what shows. Played backwards, source time 0 is the span's last frame and the source's end,
+    /// which has no frame, its first edge, so the span of frames lies one frame later.
+    pub fn source_span(&self, project: &super::Project, frame: Tick) -> Option<(Tick, Tick)> {
+        if self.props.get("timeRemap").is_some() {
+            return None;
+        }
+        let (LayerSource::Footage { item } | LayerSource::Comp { item }) = &self.source else { return None };
+        let duration = project.item(*item)?.duration()?;
+        let (a, b) = (self.comp_time(Tick::ZERO), self.comp_time(duration));
+        let late = if self.stretch < 0.0 { frame } else { Tick::ZERO };
+        Some((a.min(b) + late, a.max(b) + late))
     }
 
     pub fn transform(&self) -> Option<&PropGroup> {

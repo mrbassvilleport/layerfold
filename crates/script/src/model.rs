@@ -177,7 +177,7 @@ fn item(s: &Session, a: &J) -> R {
                         "preserveNestedFrameRate": c.preserve_frame_rate, "preserveNestedResolution": c.preserve_resolution,
                         "renderer": match c.renderer { effectcraft_project::Renderer::Classic3D => "ADBE Classic 3D", effectcraft_project::Renderer::Advanced3D => "ADBE Advanced 3d" },
                         "open": s.state.open_comps.contains(&cid), "active": s.active_comp_id() == Some(cid),
-                        "hasVideo": true, "hasAudio": c.layers.iter().any(|l| l.switches.audio && matches!(l.source, LayerSource::Footage { .. } | LayerSource::Comp { .. })),
+                        "hasVideo": true, "hasAudio": c.layers.iter().any(|l| c.layer_effectively_audio(l.id) && matches!(l.source, LayerSource::Footage { .. } | LayerSource::Comp { .. })),
                         "posterTime": c.poster_time.seconds(),
                     })
                     .as_object()
@@ -261,7 +261,10 @@ fn layer(s: &Session, a: &J) -> R {
         "startTime": l.start_time.seconds(),
         "stretch": l.stretch,
         "time": l.layer_time(t).seconds(),
-        "active": l.switches.video && l.is_active_at(t),
+        // A hidden layer folder hides the layer without touching its own switch (`enabled`).
+        "visible": c.layer_effectively_visible(l.id),
+        "active": c.layer_effectively_visible(l.id) && l.is_active_at(t),
+        "audible": c.layer_effectively_audio(l.id),
         "parent": l.parent.map(|p| p.0),
         "blendingMode": l.blend_mode.label(),
         "trackMatte": l.track_matte.map(|m| json!({"layer": m.layer.0, "kind": format!("{:?}", m.kind)})),

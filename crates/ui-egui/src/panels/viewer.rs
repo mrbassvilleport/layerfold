@@ -502,9 +502,13 @@ fn phase_layers(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: 
         // Nulls are rig controls: their outlines remain visible without selection (#1642).
         // Keep this separate from selected layers so they gain no handles, anchors or paths. Solo
         // scope matches picking (`selectable_layers`), so a null that can't be clicked isn't drawn.
-        let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av());
+        let any_solo = comp.any_solo();
         for l in comp.layers.iter().filter(|l| {
-            matches!(l.source, LayerSource::Null) && !selected.contains(&l.id) && l.is_active_at(time) && l.switches.video && (!any_solo || l.switches.solo)
+            matches!(l.source, LayerSource::Null)
+                && !selected.contains(&l.id)
+                && l.is_active_at(time)
+                && comp.layer_effectively_visible(l.id)
+                && (!any_solo || l.switches.solo)
         }) {
             let outline = layer_outline(ectx, l);
             if outline.len() > 2 {
@@ -515,10 +519,18 @@ fn phase_layers(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: 
         // The eye hides a layer's pixels, not its controls: a selected AV layer keeps its box,
         // handles, anchor, motion path and mask/shape paths so it stays editable over the visible
         // artwork (#1769). Nulls, cameras and lights have no pixels and disappear from the viewer
-        // when hidden (#1332/#1642). Picking still uses `selectable_layers`, so a hidden layer is
-        // selected from the Timeline; its controls are interactive once selected.
-        for l in comp.layers.iter().filter(|l| selected.contains(&l.id) && l.is_active_at(time) && (l.switches.video || l.source.is_av())) {
-            let col = if label_handles { t.label(l.label) } else { t.accent };
+        // when hidden (#1332/#1642). A folder's Video switch hides the same way as the layer's own.
+        // Picking still uses `selectable_layers`, so a hidden layer is selected from the Timeline;
+        // its controls are interactive once selected. A locked layer (or folder) shows no controls.
+        for l in comp.layers.iter().filter(|l| selected.contains(&l.id) && l.is_active_at(time) && viewer_editable(comp, l)) {
+            let active = app.session.active_layer() == Some(l.id);
+            let col = if active {
+                t.accent
+            } else if label_handles {
+                t.label(l.label)
+            } else {
+                t.accent.gamma_multiply(0.55)
+            };
             // Motion path of animated position (keyframes and spatial tangents are draggable).
             ov::motion_path(app, &painter, &map, ectx, l, col, &mut key_hits, &mut motion_frames);
             // Masks and shape paths.
@@ -536,7 +548,7 @@ fn phase_layers(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: 
             {
                 let (outer, _) = l2c(ectx, l);
                 let nctx = EvalCtx::new(&app.session.project, *item, nc, ectx.nested_time(l));
-                for nl in nc.layers.iter().filter(|nl| nl.is_active_at(nctx.time) && !nl.is_3d()) {
+                for nl in nc.layers.iter().filter(|nl| nl.is_active_at(nctx.time) && nc.layer_effectively_visible(nl.id) && !nl.is_3d()) {
                     if let Some((_, q, _)) = layer_quad(&nctx, nl) {
                         let sq: Vec<Pos2> = q
                             .iter()
@@ -573,7 +585,10 @@ fn phase_layers(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: 
                 continue;
             };
             let sq: Vec<Pos2> = q.iter().map(|p| map.to_screen(*p)).collect();
-            painter.add(egui::Shape::closed_line(sq.clone(), Stroke::new(1.0, col)));
+            painter.add(egui::Shape::closed_line(sq.clone(), Stroke::new(if active { 2.0 } else { 1.0 }, col)));
+            if active {
+                app.auto.add(&format!("viewer.active.{}", l.id.0), Rect::from_points(&sq), "Active Layer");
+            }
             for i in 0..8 {
                 let hp = if i < 4 { sq[i] } else { sq[i - 4] + (sq[(i - 3) % 4] - sq[i - 4]) * 0.5 };
                 let hr = Rect::from_center_size(hp, vec2(hs, hs));
@@ -614,7 +629,7 @@ fn phase_layers(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: 
                         }
                         let (so, se) = (map.to_screen(o), map.to_screen([o[0] + s[0], o[1] + s[1]]));
                         painter.arrow(so, se - so, Stroke::new(2.0, col));
-                        if !l.switches.locked {
+                        if !comp.layer_effectively_locked(l.id) {
                             let dir = pinv.apply_vec(w.apply_vec(axis));
                             let (ax, ay) = axis_drag([dir.x, dir.y, dir.z], s);
                             // The inner part stays on the anchor point, which drags the layer freely.
@@ -658,7 +673,7 @@ fn phase_scene(app: &mut EffectcraftApp, ectx: &EvalCtx, v: &mut Vw<'_>) {
     // Reference Axes (world X/Y/Z in the corner, turning with the view).
     let has_3d = comp.layers.iter().any(|l| l.is_3d() && l.is_active_at(time));
     if has_3d && app.session.prefs.three_d.extended_viewer {
-        for l in comp.layers.iter().filter(|l| l.is_3d() && l.is_active_at(time) && l.has_video()) {
+        for l in comp.layers.iter().filter(|l| l.is_3d() && l.is_active_at(time) && l.has_video() && comp.layer_effectively_visible(l.id)) {
             let q = layer_outline(ectx, l);
             if q.len() > 2 {
                 let sq: Vec<Pos2> = q.iter().map(|p| map.to_screen(*p)).collect();
@@ -695,6 +710,7 @@ fn phase_scene(app: &mut EffectcraftApp, ectx: &EvalCtx, v: &mut Vw<'_>) {
         && selected.contains(&tl)
         && let Some(layer) = comp.layer(tl)
         && layer.is_active_at(time)
+        && viewer_editable(comp, layer)
     {
         let (m, _) = l2c(ectx, layer);
         track_hits = super::tracker::draw_overlay(app, &painter, &map, &m, layer, tu, time);
@@ -707,6 +723,7 @@ fn phase_scene(app: &mut EffectcraftApp, ectx: &EvalCtx, v: &mut Vw<'_>) {
         && let Some(pr) = app.session.warp_progress()
         && let Some(layer) = comp.layer(wl)
         && layer.is_active_at(time)
+        && comp.layer_effectively_visible(wl)
     {
         let (m, _) = l2c(ectx, layer);
         let (w, h) = effectcraft_engine::render::source_size(&app.session.project, layer);
@@ -746,7 +763,7 @@ fn phase_scene(app: &mut EffectcraftApp, ectx: &EvalCtx, v: &mut Vw<'_>) {
 fn footage_problems<'c>(app: &EffectcraftApp, ectx: &EvalCtx, comp: &'c Comp, time: Tick) -> Vec<(&'c Layer, String)> {
     comp.layers
         .iter()
-        .filter(|l| l.is_active_at(time) && l.switches.video)
+        .filter(|l| l.is_active_at(time) && comp.layer_effectively_visible(l.id))
         .filter_map(|layer| {
             let (LayerSource::Footage { item } | LayerSource::Comp { item }) = &layer.source else { return None };
             Some((layer, ectx.project.item(*item).and_then(|i| app.session.footage.item_problem(i))?))
@@ -789,7 +806,7 @@ fn phase_rigs(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: &m
     if app.ui.tool.puppet_kind().is_some() {
         let sel_props: Vec<u64> = app.session.state.selected_props.iter().map(|(_, u)| *u).collect();
         for lid in &selected {
-            if let Some(l) = comp.layer(*lid)
+            if let Some(l) = comp.layer(*lid).filter(|l| viewer_editable(comp, l))
                 && let Some(ov) = super::puppet_tool::overlay(app, &ctx, cid, l, time)
             {
                 let hover = ui.input(|i| i.pointer.hover_pos());
@@ -837,7 +854,7 @@ fn phase_menu(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: &m
         ui.data_mut(|d| d.insert_temp(menu_hits_id, hits));
     }
     let context_layers: Vec<u64> =
-        app.session.state.selected_layers.iter().filter(|id| comp.layer(**id).is_some_and(|l| !l.switches.locked)).map(|id| id.0).collect();
+        app.session.state.selected_layers.iter().filter(|id| comp.layer(**id).is_some() && !comp.layer_effectively_locked(**id)).map(|id| id.0).collect();
     let mut context_actions = Vec::new();
     let copy_frame = crate::i18n::label(app, "comp.copyFrame", "Copy Frame to Clipboard");
     crate::widgets::context_menu(&resp, |ui| {
@@ -868,7 +885,7 @@ fn phase_menu(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, v: &m
                     caps
                 },
             );
-            super::timeline::layer_menu(ui, &context_layers, caps, (&mut app.auto, "viewer.layerMenu"), &mut context_actions);
+            super::timeline::layer_menu(ui, comp, &context_layers, caps, (&mut app.auto, "viewer.layerMenu"), &mut context_actions);
         }
         ui.separator();
         if ui.button(copy_frame).clicked() {
@@ -1270,7 +1287,7 @@ fn phase_dragstart(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, 
                         .selected_layers
                         .iter()
                         .filter_map(|id| comp.layer(*id))
-                        .filter(|l| !l.switches.locked)
+                        .filter(|l| viewer_editable(comp, l))
                         .filter_map(|l| {
                             let p0 = ectx.v3(l, l.transform()?, "position", [0.0; 3]);
                             let (ax, ay) = drag_axes(ectx, l);
@@ -1639,7 +1656,13 @@ fn phase_stopped(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, re
                         .filter(|l| layer_quad(ectx, l).is_some_and(|(_, q, _)| quad_intersects_box(&q, a, b)))
                         .map(|l| l.id.0)
                         .collect();
-                    let _ = app.session.execute("layer.select", json!({"layers": hits, "toggle": mods.shift}));
+                    let mut params = json!({"layers":hits,"toggle":mods.shift});
+                    if !mods.shift
+                        && let Some(id) = hits.first()
+                    {
+                        params["active"] = json!(id);
+                    }
+                    let _ = app.session.execute("layer.select", params);
                 }
                 _ => {}
             }
@@ -1655,6 +1678,8 @@ fn phase_stopped(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, re
 }
 
 fn phase_clicked(app: &mut EffectcraftApp, ectx: &EvalCtx, resp: &egui::Response, v: &mut Vw<'_>) {
+    let selected = v.selected.clone();
+    let time = v.time;
     let area = v.area;
     let zoom = v.zoom;
     let cw = v.cw;
@@ -1733,6 +1758,19 @@ fn phase_clicked(app: &mut EffectcraftApp, ectx: &EvalCtx, resp: &egui::Response
             Tool::Selection if mods.alt && vertex_at(pos, false).is_some() => {
                 if let Some(h) = vertex_at(pos, false) {
                     let _ = app.session.execute("mask.convertVertex", json!({"layer": h.layer.0, "mask": h.mask, "index": h.index}));
+                }
+            }
+            Tool::Selection if mods.alt && !mods.command && !mods.shift => {
+                // Any selected layer whose box is under the point, hidden ones included (#1769):
+                // the Timeline's Alt-click reaches them too.
+                let hit = comp.layers.iter().find(|l| {
+                    selected.contains(&l.id)
+                        && l.is_active_at(time)
+                        && viewer_editable(comp, l)
+                        && layer_quad(ectx, l).is_some_and(|(_, q, _)| point_in_quad(cpt, &q))
+                });
+                if let Some(id) = hit.map(|l| l.id) {
+                    let _ = app.session.execute("layer.setActive", json!({"layer":id.0}));
                 }
             }
             Tool::Selection if ft.is_some() && ft.as_ref().and_then(|f| ov::begin_ft_drag(f, pos, &map)).is_none() => {
@@ -1904,10 +1942,10 @@ pub(crate) use frame::{extended_region, minify_factor, snap_to_pixels, styled_li
 #[cfg(test)]
 use geometry::{box_corners, project_clipped};
 use geometry::{
-    cam_state, drag_ratio, handle_axes, handle_cursor, handle_point, one_axis, project_segment, quad_intersects_box, rotate_value, selected_others,
-    snap_handle, turn_delta,
+    cam_state, drag_ratio, handle_axes, handle_cursor, handle_point, one_axis, point_in_quad, project_segment, quad_intersects_box, rotate_value,
+    selected_others, snap_handle, turn_delta,
 };
-pub(crate) use geometry::{from_effect_space, fx2c, l2c, layer_outline, layer_quad};
+pub(crate) use geometry::{from_effect_space, fx2c, l2c, layer_outline, layer_quad, viewer_editable};
 use gesture::{Gesture, HANDLE, ROTO_HINT, pen_id, roi_drag, roi_handles, vertex_grab_radius};
 use shapes::{create_shape, draw_shape_ghost, shape_drag};
 pub(crate) use shapes::{layer_at, layer_at_including_locked, layers_at, pick, selectable_layers};

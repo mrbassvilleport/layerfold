@@ -506,6 +506,10 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         }
         "timeline.scrollToTime" => app.ui.timeline.scroll_to = Some(crate::state::ScrollTo::Time),
         "timeline.scrollToLayer" => app.ui.timeline.scroll_to = Some(crate::state::ScrollTo::Layer),
+        "timeline.layerFrames" => {
+            app.ui.timeline.layer_frames = !app.ui.timeline.layer_frames;
+            return Ok(json!({"layerFrames": app.ui.timeline.layer_frames}));
+        }
         "timeline.parentColumn" => {
             let on = !crate::panels::timeline::column_visible(&app.ui.timeline, "parent");
             crate::panels::timeline::set_column(&mut app.ui.timeline, "parent", on)?;

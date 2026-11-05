@@ -124,6 +124,7 @@ pub fn lights_at(ctx: &EvalCtx) -> Vec<LightState> {
         .filter(|l| {
             l.is_light()
                 && l.switches.video
+                && ctx.comp.layer_group_video_enabled(l.id)
                 && l.is_active_at(ctx.time)
                 && l.source != (effectcraft_project::LayerSource::Light { kind: LightKind::Environment })
         })

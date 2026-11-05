@@ -45,7 +45,19 @@ impl BridgeClient {
         s.set_read_timeout(Some(READ_TIMEOUT)).ok();
         s.set_nodelay(true).ok();
         let r = s.try_clone().map_err(|e| Error::Bridge(e.to_string()))?;
-        Ok((BufReader::new(r), s))
+        let mut conn = (BufReader::new(r), s);
+        // The app saves a token for its user when it opens the port.
+        if let Some(token) = self.addr.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).and_then(effectcraft_host::read_control_token) {
+            let unauthorized = |e: String| Error::Bridge(format!("the app at {} refused the token: {e}", self.addr));
+            let line = format!("{}\n", json!({"id": 0, "method": "auth", "params": {"token": token}}));
+            conn.1.write_all(line.as_bytes()).map_err(|e| unauthorized(e.to_string()))?;
+            let mut reply = String::new();
+            conn.0.read_line(&mut reply).map_err(|e| unauthorized(e.to_string()))?;
+            if serde_json::from_str::<Value>(&reply).ok().and_then(|v| v.get("ok")?.as_bool()) != Some(true) {
+                return Err(unauthorized(reply.trim().to_string()));
+            }
+        }
+        Ok(conn)
     }
 
     /// Call a control method; returns the reply's `result`, or the app's `error` as [`Error::App`].

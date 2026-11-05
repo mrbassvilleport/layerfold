@@ -824,3 +824,31 @@ fn double_click(h: &mut Harness<'_, EffectcraftApp>, pos: egui::Pos2) {
     }
     h.run_steps(2);
 }
+
+/// A locked layer, own or by its layer group, has no on-viewer effect point control: the viewer
+/// shows it no box, and a drag would edit a layer the user can't change. Hidden by its own or a
+/// group's Video, it keeps the control like its box (#1769).
+#[test]
+fn no_effect_point_control_on_a_locked_layer_but_on_a_hidden_one() {
+    for case in ["own Lock", "own Video", "locked group", "hidden group"] {
+        let (mut app, x) = app();
+        let s = &mut app.session;
+        match case {
+            "own Lock" => s.execute("layer.setSwitch", json!({"layers": [x.small], "switch": "lock", "value": true})).map(|_| ()),
+            "own Video" => s.execute("layer.setSwitch", json!({"layers": [x.small], "switch": "video", "value": false})).map(|_| ()),
+            _ => {
+                let g = s.execute("layer.group", json!({"layers": [x.small], "name": "G"})).unwrap()["group"].clone();
+                let key = if case == "locked group" { "locked" } else { "video" };
+                s.execute("layer.groupUpdate", json!({"group": g, key: case == "locked group"})).map(|_| ())
+            }
+        }
+        .unwrap();
+        s.state.selected_layers = vec![LayerId(x.small)];
+        s.state.selected_props = vec![(LayerId(x.small), x.point_fx)];
+        let mut h = Harness::builder().with_size(egui::vec2(1700.0, 1100.0)).build_eframe(|_| app);
+        h.step();
+        h.step();
+        let locked = case.contains("ock");
+        assert_eq!(ids(&h).contains(&format!("viewer.effectPoint.{}", x.point)), !locked, "{case}: effect point control shown only when unlocked");
+    }
+}

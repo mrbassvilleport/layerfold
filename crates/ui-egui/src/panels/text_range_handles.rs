@@ -52,6 +52,8 @@ pub fn viewer_hook(
         .layers
         .iter()
         .filter(|l| selected_layers.contains(&l.id) && l.is_active_at(ectx.time) && matches!(l.source, LayerSource::Text) && editing != Some(l.id))
+        // Same scope as the layer's own box: none on locked layers, including by folder.
+        .filter(|l| super::viewer::viewer_editable(ectx.comp, l))
     {
         let Some(text) = layer.props.sub("text") else { continue };
         if text.sub("pathOptions").is_some_and(|po| ectx.e(layer, po, "path") != 0) {

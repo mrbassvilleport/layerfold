@@ -810,3 +810,24 @@ fn ime_delete_without_a_session_or_with_an_empty_range_does_nothing() {
     feed(&mut app, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 2, after_bytes: 0 })]);
     assert_eq!(doc_text(&app, lid), "abc");
 }
+
+/// Locking the text's folder while it is being edited ends the edit overlay.
+#[test]
+fn a_locked_folder_ends_the_text_edit_overlay() {
+    let mut s = effectcraft_engine::Session::default();
+    s.execute("comp.new", json!({"name": "T", "width": 64, "height": 64, "duration": 1})).unwrap();
+    let lid = LayerId(s.execute("layer.newText", json!({"text": "Hi", "size": 20})).unwrap()["layer"].as_u64().unwrap());
+    let group = s.execute("layer.group", json!({"layers": [lid.0]})).unwrap()["group"].as_u64().unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let open = |s: effectcraft_engine::Session| {
+        let app = EffectcraftApp::new(s);
+        let c = app.session.active_comp().unwrap();
+        let ctx = EvalCtx::new(&app.session.project, cid, c, app.session.time());
+        let open = edited(&app, &ctx, lid).is_some();
+        (open, app.session)
+    };
+    let (was, mut s) = open(s);
+    assert!(was);
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    assert!(!open(s).0);
+}

@@ -195,6 +195,34 @@ fn a_bar_on_a_box_handle_leaves_it_the_press() {
     assert_ne!(scale(&h), before, "the handle scaled the layer");
 }
 
+/// A locked layer, or one in a locked layer group, has no bars: the viewer shows it no box and a
+/// drag would edit a layer the user can't change. Hidden by its own or a group's Video, it keeps
+/// them like its box (#1769).
+#[test]
+fn no_bars_on_a_locked_layer_but_on_a_hidden_one() {
+    for (case, prep) in [
+        ("own Lock", json!({"switch": "lock", "value": true})),
+        ("own Video", json!({"switch": "video", "value": false})),
+        ("locked group", json!({"locked": true})),
+        ("hidden group", json!({"video": false})),
+    ] {
+        let (mut s, ids) = setup();
+        s.state.selected_props = vec![(LayerId(ids.layer), ids.animator)];
+        if prep.get("switch").is_some() {
+            s.execute("layer.setSwitch", json!({"layers": [ids.layer], "switch": prep["switch"], "value": prep["value"]})).unwrap();
+        } else {
+            let g = s.execute("layer.group", json!({"layers": [ids.layer], "name": "G"})).unwrap()["group"].clone();
+            let mut p = prep.clone();
+            p["group"] = g;
+            s.execute("layer.groupUpdate", p).unwrap();
+        }
+        s.state.selected_layers = vec![LayerId(ids.layer)];
+        let h = harness(s);
+        let locked = case.contains("ock");
+        assert_eq!(handle(&h, ids.end).is_some(), !locked, "{case}: End bar shown only when unlocked");
+    }
+}
+
 /// The text the Timeline paints in property `uid`'s value field.
 fn timeline_value(h: &Harness<'_, EffectcraftApp>, uid: u64) -> String {
     let e = h.state().auto.find(&format!("timeline.prop.{uid}.value")).unwrap_or_else(|| panic!("timeline.prop.{uid}.value isn't shown"));

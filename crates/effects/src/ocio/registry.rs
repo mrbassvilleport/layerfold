@@ -84,7 +84,7 @@ pub fn specs() -> Vec<EffectSpec> {
             "OCIO Look Transform",
             cc,
             vec![
-                p("config", "Configuration", Value::Enum(0), popup(&["Built-in (EffectCraft minimal)"])),
+                p("config", "Configuration", Value::Enum(0), popup(&["Built-in (Layerfold minimal)"])),
                 space_param("source", "Source", acescg),
                 space_param("destination", "Destination", acescg),
                 p("look", "Look", Value::Enum(0), popup(&look_opts)),

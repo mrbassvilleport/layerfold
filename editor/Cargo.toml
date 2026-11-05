@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["tools/engine-check"]
+default-members = ["tools/engine-check"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+# Versions reserved for the first frontend; no GUI dependency is built by engine-check.
+egui = "=0.36.2"
+eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
+# Match the upstream PDF parser patch: dependency workspace patches do not propagate here.
+[patch.crates-io]
+hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.7.2" }
+hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.3.0" }

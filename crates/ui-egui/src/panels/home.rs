@@ -1,6 +1,6 @@
 //! The Home screen, laid out like After Effects' (shown over the whole workspace at launch, from
 //! the Tools bar's Home button and by the Learn workspace). A left rail holds New Project / Open
-//! Project, the Home / Templates / Learn pages and, at its foot, the ArtCraft community links.
+//! Project, the Home / Templates / Learn pages and, at its foot, the upstream community links.
 //! The Home page welcomes you with quick-start tiles (New Composition, the demo project, Import,
 //! New from Template) over the recent projects (File ▸ Open Recent, from Settings): a filterable
 //! table with thumbnails and Name / Opened / Size / Kind columns. Templates is the New from
@@ -128,7 +128,7 @@ pub fn format_size(bytes: u64) -> String {
 /// The Kind column: what a recent file is, by its extension, in the interface language.
 fn kind_of(path: &str) -> &'static str {
     tr(match std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase).as_deref() {
-        Some("ecproj") => "EffectCraft project",
+        Some("ecproj") => "Layerfold project",
         Some("aep" | "aepx") => "After Effects project",
         Some("json" | "lottie") => "Lottie animation",
         _ => "Project",
@@ -283,50 +283,21 @@ fn rail_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, rail:
         }
         y += 38.0;
     }
-    // Community links at the foot (below the pages when the window is short).
-    let links = [
-        (Icon::Chat, "Join the ArtCraft Discord", "help.discord"),
-        (Icon::Globe, "getartcraft.com", "help.website"),
-        (Icon::Globe, "EffectCraft home page", "help.appPage"),
-        (Icon::Code, "EffectCraft on GitHub", "help.github"),
-    ];
-    let sib = effectcraft_engine::links::SIBLINGS;
-    let sib_rows = sib.len().div_ceil(2) as f32;
-    let foot_h = 22.0 + links.len() as f32 * 30.0 + 22.0 + sib_rows * 26.0;
-    let mut cy = (rail.max.y - 16.0 - foot_h).max(y + 16.0);
+    // A modified build keeps only the plain link to the original source at the foot: upstream
+    // community and sibling-app links would read as support from the upstream team.
+    let (cmd, label) = ("help.github", "Layerfold on GitHub");
+    let cy = (rail.max.y - 16.0 - 26.0).max(y + 26.0);
     p.line_segment([pos2(x0, cy - 10.0), pos2(x0 + w, cy - 10.0)], Stroke::new(1.0, t.separator));
-    p.text(pos2(x0, cy + 6.0), Align2::LEFT_CENTER, tr("Community"), Tokens::semibold(12.0), t.text_dim);
-    cy += 22.0;
-    for (icon, label, cmd) in links {
-        let r = Rect::from_min_size(pos2(x0, cy), vec2(w, 26.0));
-        let resp = ui.interact(r, egui::Id::unique(("home-link", cmd)), Sense::click());
-        let discord = cmd == "help.discord";
-        if discord {
-            p.rect_filled(r, 13.0, Color32::from_rgb(0x58, 0x65, 0xf2));
-        } else if resp.hovered() {
-            p.rect_filled(r, 13.0, t.hover);
-        }
-        let col = if discord { Color32::WHITE } else { t.text };
-        icons::paint(p, Rect::from_center_size(pos2(r.min.x + 16.0, r.center().y), vec2(13.0, 13.0)), icon, col);
-        p.text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, tr(label), Tokens::medium(12.0), col);
-        app.auto.add(&format!("home.{cmd}"), r, label);
-        if resp.clicked() {
-            let _ = app.session.execute(cmd, json!({}));
-        }
-        cy += 30.0;
+    let r = Rect::from_min_size(pos2(x0, cy), vec2(w, 26.0));
+    let resp = ui.interact(r, egui::Id::unique(("home-link", cmd)), Sense::click());
+    if resp.hovered() {
+        p.rect_filled(r, 13.0, t.hover);
     }
-    p.text(pos2(x0, cy + 8.0), Align2::LEFT_CENTER, tr("More ArtCraft apps"), Tokens::ui(11.0), t.text_faint);
-    cy += 20.0;
-    let sw = (w - 6.0) / 2.0;
-    for (i, (name, slug)) in sib.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(x0 + (i % 2) as f32 * (sw + 6.0), cy + (i / 2) as f32 * 26.0), vec2(sw, 22.0));
-        let resp = ui.interact(r, egui::Id::unique(("sib", *slug)), Sense::click());
-        p.rect_filled(r, 11.0, if resp.hovered() { t.hover } else { t.field_bg });
-        p.text(r.center(), Align2::CENTER_CENTER, *name, Tokens::ui(11.0), t.text);
-        app.auto.add(&format!("home.sibling.{slug}"), r, name);
-        if resp.clicked() {
-            let _ = app.session.execute("help.sibling", json!({"app": slug}));
-        }
+    icons::paint(p, Rect::from_center_size(pos2(r.min.x + 16.0, r.center().y), vec2(13.0, 13.0)), Icon::Code, t.text);
+    p.text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, tr(label), Tokens::medium(12.0), t.text);
+    app.auto.add(&format!("home.{cmd}"), r, label);
+    if resp.clicked() {
+        let _ = app.session.execute(cmd, json!({}));
     }
 }
 
@@ -342,7 +313,7 @@ fn home_page(
     let t = app.tokens;
     let (x0, w) = (area.min.x, area.width());
     let mut y = area.min.y;
-    p.text(pos2(x0, y + 14.0), Align2::LEFT_CENTER, tr("Welcome to EffectCraft"), Tokens::semibold(26.0), t.tab_text_active);
+    p.text(pos2(x0, y + 14.0), Align2::LEFT_CENTER, tr("Welcome to Layerfold"), Tokens::semibold(26.0), t.tab_text_active);
     y += 40.0;
     p.text(
         pos2(x0, y + 8.0),
@@ -557,7 +528,7 @@ mod tests {
         assert_eq!(format_ago(now, now - 30 * 86_400), "2026-08-22");
         assert_eq!(format_ago(now, now + 100), "Just now");
         assert_eq!((format_size(900), format_size(13_000), format_size(3_500_000)), ("900 B".into(), "13 KB".into(), "3.3 MB".into()));
-        assert_eq!((kind_of("/a/B.ecproj"), kind_of("c.AEP"), kind_of("x")), ("EffectCraft project", "After Effects project", "Project"));
+        assert_eq!((kind_of("/a/B.ecproj"), kind_of("c.AEP"), kind_of("x")), ("Layerfold project", "After Effects project", "Project"));
         // After a week it is the date, whole even for a five-digit year.
         assert_eq!(format_ago(i64::MAX, 253_402_300_800), "10000-01-01");
     }
@@ -569,7 +540,7 @@ mod tests {
         let now = 1_790_000_000;
         crate::i18n::set_current("zh-hans");
         let shown = (format_ago(now, now - 5), format_ago(now, now - 3 * 3_600), format_ago(now, now - 90_000), kind_of("/a/B.ecproj"));
-        let catalog = (tr("Just now").to_string(), tr_args("{} hours ago", &[&3]), tr("Yesterday").to_string(), tr("EffectCraft project"));
+        let catalog = (tr("Just now").to_string(), tr_args("{} hours ago", &[&3]), tr("Yesterday").to_string(), tr("Layerfold project"));
         crate::i18n::set_current("en");
         assert_eq!(shown, catalog);
         assert_eq!(tr("Filter recent files"), "Filter recent files");
@@ -594,7 +565,6 @@ mod tests {
             "home.file.open",
             "home.app.newComp",
             "home.file.openDemoProject",
-            "home.help.discord",
             "home.help.github",
             "home.recent.0",
             "home.filter",

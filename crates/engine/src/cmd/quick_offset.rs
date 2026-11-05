@@ -66,13 +66,19 @@ fn layers(s: &mut Session, p: &Value) -> Result<Value> {
     let d = delta_p(p, NAME)?;
     let (cid, ids) = layers_p(s, p)?;
     let merge = merge_p(p);
-    let gesture = b_p(p, "fromStart").unwrap_or(false) && merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m));
-    let base = s.history.undo.last().filter(|_| gesture).map(|(_, b)| b.clone());
+    let from_start = b_p(p, "fromStart").unwrap_or(false);
+    // Only the drag's own steps may come between: another change under the same merge key (a
+    // folder locked) ends it, so its start snapshot isn't restored over that change.
+    let gesture = from_start
+        && merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m))
+        && s.layer_move.as_ref().is_some_and(|g| Some(g.merge.as_str()) == merge && g.revision == s.revision);
+    let base = s.layer_move.as_ref().filter(|_| gesture).map(|g| g.base.clone());
     let start = base.clone().unwrap_or_else(|| s.project.clone());
+    let next = merge.filter(|_| from_start).map(|m| crate::KeyMove { merge: m.to_string(), from: vec![], total: Tick::ZERO, revision: 0, base: start.clone() });
     let comp = start.comp(cid).ok_or(EngineError::NoComp)?;
-    let order = order(NAME, ids, |id| comp.layer(id).is_some_and(|l| !l.switches.locked))?;
+    let order = order(NAME, ids, |id| comp.layer(id).is_some() && !comp.layer_effectively_locked(id))?;
     let moves: Vec<(LayerId, Tick)> = order.iter().copied().zip(shares(d, order.len())).collect();
-    s.edit("Quick Offset", merge, |proj, _| {
+    let r = s.edit("Quick Offset", merge, |proj, _| {
         if let Some(b) = &base {
             *proj = (**b).clone();
         }
@@ -84,7 +90,9 @@ fn layers(s: &mut Session, p: &Value) -> Result<Value> {
             (l.start_time, l.in_point, l.out_point) = times;
         }
         Ok(json!({"layers": moves.iter().map(|(id, d)| json!({"layer": id.0, "offset": d.seconds()})).collect::<Vec<_>>()}))
-    })
+    })?;
+    s.layer_move = next.map(|g| crate::KeyMove { revision: s.revision, ..g });
+    Ok(r)
 }
 
 /// `keys.quickOffset`: the selected keys of each layer move together by the layer's share of
@@ -99,9 +107,9 @@ fn keys(s: &mut Session, p: &Value) -> Result<Value> {
     let (from, total, base) = key_gesture(s, merge, d, b_p(p, "fromStart").unwrap_or(false));
     let start = base.clone().unwrap_or_else(|| s.project.clone());
     let comp = start.comp(cid).ok_or(EngineError::NoComp)?;
-    let order = order(NAME, from.iter().map(|k| k.layer), |id| comp.layer(id).is_some_and(|l| !l.switches.locked))?;
+    let order = order(NAME, from.iter().map(|k| k.layer), |id| comp.layer(id).is_some() && !comp.layer_effectively_locked(id))?;
     let by_layer: HashMap<LayerId, Tick> = order.iter().copied().zip(shares(total, order.len())).collect();
-    let next = merge.map(|m| crate::KeyMove { merge: m.to_string(), from: from.clone(), total });
+    let next = merge.map(|m| crate::KeyMove { merge: m.to_string(), from: from.clone(), total, revision: 0, base: start.clone() });
     let moved = s.edit("Quick Offset Keyframes", merge, |proj, st| {
         if let Some(b) = &base {
             *proj = (**b).clone();
@@ -116,7 +124,7 @@ fn keys(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(json!({"keys": st.selected_keys.len(), "layers": order.iter().map(|id| json!({"layer": id.0, "offset": by_layer.get(id).copied().unwrap_or_default().seconds()})).collect::<Vec<_>>()}))
     })?;
     // Only a step that applied counts towards the drag (a refused one is as if never sent).
-    s.key_move = next;
+    s.key_move = next.map(|g| crate::KeyMove { revision: s.revision, ..g });
     Ok(moved)
 }
 

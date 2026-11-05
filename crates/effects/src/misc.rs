@@ -444,7 +444,16 @@ fn mosaic(ctx: &EffectCtx, mut b: Buf) -> Buf {
 
 fn posterize(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let lv = ctx.params.f("level").round().clamp(2.0, 255.0) as f32 - 1.0;
-    b.img.map_straight(|c| c.map(|v| (v.clamp(0.0, 1.0) * lv).round() / lv));
+    b.img.map_straight(|c| {
+        c.map(|v| {
+            let scaled = v.clamp(0.0, 1.0) * lv;
+            // The Windows GNU roundf can round the float just below 0.5 up. Compare the
+            // fractional part explicitly, matching the GPU's half-away rounding without
+            // adding 0.5 (which itself can round that neighbouring float up to 1.0).
+            let band = scaled.trunc();
+            (if scaled - band >= 0.5 { band + 1.0 } else { band }) / lv
+        })
+    });
     b
 }
 
@@ -873,6 +882,16 @@ pub fn specs() -> Vec<EffectSpec> {
 mod tests {
     use super::*;
     use crate::{EffectEnv, run_fx};
+
+    #[test]
+    fn posterize_keeps_the_band_just_below_half() {
+        let below = f32::from_bits(0.5f32.to_bits() - 1);
+        let above = f32::from_bits(0.5f32.to_bits() + 1);
+        let mut img = Image::new(3, 1);
+        img.data = vec![[below, 0.0, 0.0, 1.0], [0.5, 0.0, 0.0, 1.0], [above, 0.0, 0.0, 1.0]];
+        let out = run_fx("ec.stylize.posterize", &[("level", Value::Scalar(2.0))], img, 0.0, EffectEnv::default());
+        assert_eq!(out.img.data, [[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]]);
+    }
 
     /// White left half, black right half (one vertical edge at x = 20).
     fn edge() -> effectcraft_raster::Image {

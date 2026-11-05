@@ -568,6 +568,22 @@ fn muted_non_uniform_scale_does_not_force_prerendering() {
 }
 
 #[test]
+fn export_disables_clips_in_hidden_and_muted_folders() {
+    let (mut p, cid) = ae_project();
+    let c = p.comp_mut(cid).unwrap();
+    let members = vec![c.layers[2].id, c.layers[3].id];
+    c.layer_groups = vec![effectcraft_project::LayerGroup { id: 1, name: "Off".into(), members, video: false, audio: false, ..Default::default() }];
+    let out = export(&p, cid, &ExportOptions { format: TimelineFormat::Otio, ..Default::default() }, &HashMap::new()).unwrap();
+    let (q, r) = import_doc(&out.bytes, "Main.otio", &mut probe);
+    let main = r.comps.iter().copied().find(|c| q.item(*c).unwrap().name == "Main").expect("Main");
+    let m = q.comp(main).unwrap();
+    let clip = m.layers.iter().find(|l| l.name == "clip a").expect("clip a");
+    assert!(!clip.switches.video, "a clip in a hidden folder is exported disabled");
+    let tone = m.layers.iter().find(|l| l.name.starts_with("tone")).expect("tone");
+    assert!(!tone.switches.audio, "a clip in a muted folder is exported disabled");
+}
+
+#[test]
 fn export_without_prerender_leaves_text_out() {
     let (p, cid) = ae_project();
     let out = export(&p, cid, &ExportOptions { prerender: PrerenderMode::None, ..Default::default() }, &HashMap::new()).unwrap();

@@ -7,6 +7,7 @@ use super::{
 
 mod comps;
 mod dispatch;
+pub use dispatch::SCRIPT_WRITES;
 mod edit;
 mod render;
 

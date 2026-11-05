@@ -188,18 +188,22 @@ pub(crate) fn transform_box(
     }
 }
 
-/// Graph Editor ▸ Snap: a dragged key time (comp s) snaps to the current time, another key's
-/// time, a layer's in or out point, a comp or layer marker or the work area within 6 points.
-pub(crate) fn snap_time(app: &EffectcraftApp, tm: TMap, t: f64, others: &[f64]) -> f64 {
-    if !app.ui.timeline.graph_snap {
+/// Shift uses eight screen points; the graph's Snap toggle uses six. Both use only
+/// visible targets, excluding the selected keys by identity.
+pub(crate) fn snap_time(app: &EffectcraftApp, ctx: &egui::Context, tm: TMap, t: f64) -> f64 {
+    let shift = ctx.input(|i| i.modifiers.shift);
+    if !shift && !app.ui.timeline.graph_snap {
         return t;
     }
-    let mut cands = vec![app.session.time().seconds()];
-    cands.extend_from_slice(others);
-    if let Some(c) = app.session.active_comp() {
-        cands.extend(comp_snap_times(c));
+    let pps = if shift { tm.pps } else { tm.pps * 8.0 / 6.0 };
+    if let Some(hit) = super::timeline::edit_snap(app, ctx, t, pps, &[], true, (0.0, f64::INFINITY)) {
+        let time = if shift { hit.time } else { snap_px(tm, t, &[hit.time], 6.0) };
+        if shift {
+            ctx.data_mut(|d| d.insert_temp(super::timeline::snap_hint_id(), hit));
+        }
+        return time;
     }
-    snap_px(tm, t, &cands, 6.0)
+    t
 }
 
 /// Snap targets of a comp besides keys: work area, markers, and every layer's in / out points

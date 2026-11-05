@@ -722,6 +722,12 @@ fn push_to_comp(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.edit("Push Override Values to Source", None, |proj, _| {
         let sc = proj.comp_mut(src).ok_or(EngineError::NoComp)?;
+        if writes.iter().any(|(kind, _, _)| match kind {
+            EgKind::Media { layer } => super::locked_by_group(sc, *layer),
+            _ => kind.targets().iter().any(|(layer, _)| super::locked_by_group(sc, *layer)),
+        }) {
+            return Err(bad(C, "a source layer belongs to a locked group"));
+        }
         for (kind, pr, as_type) in &writes {
             match kind {
                 // A Font control writes only the font (the source keeps its text and keys).
@@ -848,7 +854,7 @@ fn export_template(s: &mut Session, p: &Value) -> Result<Value> {
     let manifest = json!({
         "format": TEMPLATE_FORMAT,
         "version": TEMPLATE_VERSION,
-        "generator": format!("EffectCraft {}", env!("CARGO_PKG_VERSION")),
+        "generator": format!("Layerfold {}", env!("CARGO_PKG_VERSION")),
         "name": name,
         "comp": cid.0,
         "compName": comp_name,
@@ -879,12 +885,12 @@ pub fn read_template(bytes: &[u8]) -> std::result::Result<(Value, Project, Vec<(
     let entries = effectcraft_lottie::zip::read_stored(bytes);
     let get = |n: &str| entries.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
     let manifest: Value =
-        serde_json::from_slice(&get("manifest.json").ok_or("not an EffectCraft template (no manifest.json)")?).map_err(|e| format!("manifest.json: {e}"))?;
+        serde_json::from_slice(&get("manifest.json").ok_or("not an Layerfold template (no manifest.json)")?).map_err(|e| format!("manifest.json: {e}"))?;
     if manifest.get("format").and_then(Value::as_str) != Some(TEMPLATE_FORMAT) {
-        return Err("not an EffectCraft template".into());
+        return Err("not an Layerfold template".into());
     }
     if manifest.get("version").and_then(Value::as_u64).unwrap_or(0) > TEMPLATE_VERSION as u64 {
-        return Err("the template was made by a newer EffectCraft".into());
+        return Err("the template was made by a newer Layerfold".into());
     }
     let text = String::from_utf8(get("project.ecproj").ok_or("template has no project.ecproj")?).map_err(|e| e.to_string())?;
     let mut project = Project::from_json(&text).map_err(|e| e.to_string())?;
@@ -943,6 +949,10 @@ fn import_template(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
+    // Paths the template stores (not its embedded media, written above) are held to the same rule
+    // as an opened project's.
+    crate::doc_path::resolve_footage(&mut sub, Some(&path));
+    s.stored_paths.add(&sub, Some(&path));
     let target = if b_p(p, "addToComp") == Some(false) { None } else { comp_id(s, p).ok() };
     let base = s.project.next_id;
     essential::offset_ids(&mut sub, base);

@@ -156,3 +156,30 @@ fn handles_show_only_for_a_selected_gradient() {
     h.run_steps(3);
     assert!(handle(&h, ids.end).is_none(), "View ▸ Show Layer Controls off hides them");
 }
+
+/// A locked layer, or one in a locked layer group, has no gradient handles. Hidden by its own or a
+/// group's Video, it keeps them like its box (#1769).
+#[test]
+fn no_handles_on_a_locked_layer_but_on_a_hidden_one() {
+    for (case, prep) in [
+        ("own Lock", json!({"switch": "lock", "value": true})),
+        ("own Video", json!({"switch": "video", "value": false})),
+        ("locked group", json!({"locked": true})),
+        ("hidden group", json!({"video": false})),
+    ] {
+        let (mut s, ids) = setup(false, |_, _, _| {});
+        s.state.selected_props = vec![(LayerId(ids.layer), ids.gfill)];
+        if prep.get("switch").is_some() {
+            s.execute("layer.setSwitch", json!({"layers": [ids.layer], "switch": prep["switch"], "value": prep["value"]})).unwrap();
+        } else {
+            let g = s.execute("layer.group", json!({"layers": [ids.layer], "name": "G"})).unwrap()["group"].clone();
+            let mut p = prep.clone();
+            p["group"] = g;
+            s.execute("layer.groupUpdate", p).unwrap();
+        }
+        s.state.selected_layers = vec![LayerId(ids.layer)];
+        let h = harness(s);
+        let locked = case.contains("ock");
+        assert_eq!(handle(&h, ids.end).is_some(), !locked, "{case}: End Point handle shown only when unlocked");
+    }
+}

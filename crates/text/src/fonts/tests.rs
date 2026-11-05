@@ -318,6 +318,11 @@ fn other_scripts_fall_back_to_a_plain_system_family() {
             eprintln!("{c}: no family from the list is installed; skipping");
             continue;
         }
+        // Exercise the warm-font path too: unrelated installed faces may have been
+        // loaded by another layer or another test before this fallback is requested.
+        if let Some(display) = all_faces().iter().find(|f| !families.iter().any(|n| f.info.family.eq_ignore_ascii_case(n)) && file_covers(f, c)) {
+            assert!(display.has_char(c));
+        }
         let f = face(fallback_for(c, inter));
         assert!(f.has_char(c), "{c}: {} lacks it", f.info.family);
         assert!(families.iter().any(|n| f.info.family.eq_ignore_ascii_case(n)), "{c} → {}", f.info.family);

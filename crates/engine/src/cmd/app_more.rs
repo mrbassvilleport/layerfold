@@ -439,7 +439,7 @@ pub fn system_report(s: &Session) -> Value {
         issues.push("Export is not available in this build.".to_string());
     }
     json!({
-        "app": format!("EffectCraft {}", env!("CARGO_PKG_VERSION")),
+        "app": format!("Layerfold {}", env!("CARGO_PKG_VERSION")),
         "os": crate::sysinfo::os_version(),
         "arch": std::env::consts::ARCH,
         "cpu": crate::sysinfo::cpu_name(),
@@ -592,6 +592,8 @@ fn create_vr_environment(s: &mut Session, p: &Value) -> Result<Value> {
                     let mut copies = vec![];
                     for l in &lights {
                         let mut c = l.clone();
+                        // A light in a hidden folder still parents others, but lights nothing.
+                        c.switches.video &= src.layer_group_video_enabled(l.id);
                         super::edit::reid(&mut c, &mut next);
                         map.insert(l.id, c.id);
                         copies.push(c);

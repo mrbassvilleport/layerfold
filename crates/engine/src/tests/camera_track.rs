@@ -78,6 +78,33 @@ fn status(s: &mut Session) -> Value {
     s.execute("camera.solveStatus", json!({})).unwrap()
 }
 
+/// Layers created on the tracked footage join its folders (a hidden folder hides them too).
+#[test]
+fn layers_created_from_a_solve_join_the_footage_folder() {
+    let (mut s, clip) = tracked(json!({}));
+    s.execute("time.set", json!({"time": frame_time(12).seconds()})).unwrap();
+    let pts = s.execute("camera.points", json!({})).unwrap();
+    let floor: Vec<u64> = pts["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["comp"][1].as_f64().unwrap() > H as f64 * 0.8)
+        .map(|p| p["id"].as_u64().unwrap())
+        .take(8)
+        .collect();
+    s.execute("camera.selectPoints", json!({"points": floor})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+    let r = s.execute_checked("camera.createFromSolve", json!({"kind": "shadowCatcher"})).unwrap();
+    let comp = s.active_comp().unwrap();
+    for v in r["layers"].as_array().unwrap() {
+        let l = LayerId(v.as_u64().unwrap());
+        assert_eq!(comp.layer_group(l).map(|g| g.id), Some(group), "{}", comp.layer(l).unwrap().name);
+    }
+    let cam = LayerId(r["camera"].as_u64().unwrap());
+    assert!(comp.layer_group(cam).is_none(), "the camera stays at the top, outside the folder");
+}
+
 /// Solved with a sane error and focal length; returns the Camera Tracker effect group.
 fn assert_solved(s: &mut Session, clip: LayerId) -> PropGroup {
     let st = status(s);

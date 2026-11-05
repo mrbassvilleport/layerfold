@@ -435,6 +435,36 @@ fn masks_mattes_and_preserve_transparency() {
 }
 
 #[test]
+fn nested_group_video_and_matte_gates_match_cpu() {
+    let mut s = Scene::new(BitDepth::Bpc32);
+    let bottom = s.solid([0.0, 0.0, 1.0], 97, 61);
+    s.push(bottom);
+    let mut top = s.solid([1.0, 0.0, 0.0], 97, 61);
+    top.switches.solo = true;
+    let id = s.push(top);
+    s.p.comp_mut(s.cid).unwrap().layer_groups = vec![
+        effectcraft_project::LayerGroup { id: 5000, name: "Outer".into(), members: vec![id], ..Default::default() },
+        effectcraft_project::LayerGroup { id: 5001, name: "Inner".into(), parent: Some(5000), members: vec![id], ..Default::default() },
+    ];
+    for enabled in [true, false, true] {
+        s.p.comp_mut(s.cid).unwrap().layer_groups[0].video = enabled;
+        check("nested folder video", compare_at(&s, opts(), Tick::ZERO), 0.0);
+    }
+    let c = s.p.comp_mut(s.cid).unwrap();
+    c.layers[0].switches.video = false;
+    c.layers[0].switches.solo = false;
+    c.layers[1].track_matte = Some(TrackMatte { layer: id, kind: MatteKind::Alpha });
+    for kind in [MatteKind::Alpha, MatteKind::AlphaInverted] {
+        for enabled in [true, false] {
+            let c = s.p.comp_mut(s.cid).unwrap();
+            c.layer_groups[0].video = enabled;
+            c.layers[1].track_matte = Some(TrackMatte { layer: id, kind });
+            check("folder matte video", compare_at(&s, opts(), Tick::ZERO), 0.0);
+        }
+    }
+}
+
+#[test]
 fn motion_blur_accumulates_like_the_cpu() {
     for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
         let mut s = Scene::new(depth);

@@ -1510,11 +1510,11 @@ mod tests {
         let l = effectcraft_engine::color::Label::Yellow;
         p.add_item("Solids", l, None, ItemKind::Folder);
         p.add_item("Precomps", l, None, ItemKind::Folder);
-        p.add_item("EffectCraft Intro", l, None, ItemKind::Folder);
+        p.add_item("Layerfold Intro", l, None, ItemKind::Folder);
         let mut kids = p.children(None);
         sort_items(&mut kids, "name", false);
         let names: Vec<&str> = kids.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, ["EffectCraft Intro", "Precomps", "Solids"]);
+        assert_eq!(names, ["Layerfold Intro", "Precomps", "Solids"]);
         sort_items(&mut kids, "name", true);
         assert_eq!(kids[0].name, "Solids");
     }

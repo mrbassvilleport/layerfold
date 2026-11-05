@@ -26,6 +26,19 @@ impl Session {
         commands::text_edit::after_replacement(self, before);
     }
 
+    /// The explicit primary layer, with a deterministic fallback for legacy callers.
+    pub fn active_layer(&self) -> Option<LayerId> {
+        let comp = self.active_comp()?;
+        self.state
+            .active_layer
+            .filter(|id| self.state.selected_layers.contains(id) && comp.layer(*id).is_some())
+            .or_else(|| comp.layers.iter().find(|l| self.state.selected_layers.contains(&l.id)).map(|l| l.id))
+    }
+
+    pub(crate) fn sanitize_active_layer(&mut self) {
+        self.state.active_layer = self.active_layer();
+    }
+
     /// Drop selections that no longer exist. Each comp keeps its own selection (#1001); a layer id
     /// counts only inside the comp that owns it, so the active comp never sees another comp's layers.
     /// Validate property UIDs too: undo can remove a control and rewind the allocator, so keeping
@@ -38,6 +51,8 @@ impl Session {
             let Some(c) = p.comp(*cid) else { return false };
             let ids: Vec<LayerId> = c.layers.iter().map(|l| l.id).collect();
             sel.layers.retain(|l| ids.contains(l));
+            sel.active_layer =
+                sel.active_layer.filter(|id| sel.layers.contains(id)).or_else(|| c.layers.iter().find(|l| sel.layers.contains(&l.id)).map(|l| l.id));
             sel.props.retain(|(lid, uid)| c.layer(*lid).is_some_and(|l| l.props.find(*uid).is_some() || l.props.find_group(*uid).is_some()));
             sel.keys.retain(|k| c.layer(k.layer).is_some_and(|l| l.props.find(k.prop).is_some()));
             sel.vertices.retain(|v| ids.contains(&v.layer));
@@ -65,6 +80,7 @@ impl Session {
             self.state.current_track = None;
         }
         self.state.project_selection.retain(|i| p.item(*i).is_some());
+        self.sanitize_active_layer();
         commands::text_edit::sanitize(self);
     }
 
@@ -187,6 +203,7 @@ impl Session {
         let Some(id) = self.state.active_comp else { return };
         let sel = CompSelection {
             layers: self.state.selected_layers.clone(),
+            active_layer: self.active_layer(),
             props: self.state.selected_props.clone(),
             keys: self.state.selected_keys.clone(),
             vertices: self.state.selected_vertices.clone(),
@@ -202,6 +219,8 @@ impl Session {
         match self.state.comp_selections.remove(&id) {
             Some(sel) => {
                 self.state.selected_layers = sel.layers;
+                self.state.active_layer = sel.active_layer;
+                self.sanitize_active_layer();
                 self.state.selected_props = sel.props;
                 self.state.selected_keys = sel.keys;
                 self.state.selected_vertices = sel.vertices;
@@ -212,6 +231,7 @@ impl Session {
 
     fn clear_live_selection(&mut self) {
         self.state.selected_layers.clear();
+        self.state.active_layer = None;
         self.state.selected_props.clear();
         self.state.selected_keys.clear();
         self.state.selected_vertices.clear();

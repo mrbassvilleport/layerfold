@@ -144,6 +144,11 @@ fn instantiate(s: &mut Session, source: u64, values: &Map<String, Value>, import
         .iter()
         .map(|layer| layer.id.0)
         .collect();
+    // The duplicate's locked folders would keep their layers through `edit.clear`.
+    let groups: Vec<u64> = s.project.comp(ItemId(parent)).map(|c| c.layer_groups.iter().filter(|g| g.locked).map(|g| g.id).collect()).unwrap_or_default();
+    for group in groups {
+        execute(s, "layer.groupUpdate", json!({"comp": parent, "group": group, "locked": false}))?;
+    }
     if !layers.is_empty() {
         execute(s, "layer.setSwitch", json!({"comp": parent, "layers": layers, "switch": "lock", "value": false}))?;
         execute(s, "edit.clear", json!({"comp": parent, "layers": layers}))?;
@@ -187,4 +192,24 @@ fn instantiate(s: &mut Session, source: u64, values: &Map<String, Value>, import
         execute(s, "essential.set", json!({"comp": parent, "layer": instance, "control": control, "value": value}))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A template with a locked folder renders its instance alone: the wrapper keeps no copies.
+    #[test]
+    fn a_locked_folder_in_a_template_leaves_no_copies() {
+        let mut s = Session::new();
+        s.execute("comp.new", json!({"name": "Src", "width": 32, "height": 32, "duration": 1})).unwrap();
+        let source = s.active_comp_id().unwrap().0;
+        let a = s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("layer.newSolid", json!({"color": "#00ff00"})).unwrap();
+        let group = s.execute("layer.group", json!({"layers": [a]})).unwrap()["group"].as_u64().unwrap();
+        s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+        assert!(instantiate(&mut s, source, &Map::new(), false).is_ok());
+        let wrapper = s.active_comp().unwrap();
+        assert_eq!(wrapper.layers.len(), 1, "{:?}", wrapper.layers.iter().map(|l| &l.name).collect::<Vec<_>>());
+    }
 }

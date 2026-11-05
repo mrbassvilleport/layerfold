@@ -177,11 +177,22 @@ fn blender_export_defaults_and_script_escaping() {
     assert_eq!(d["frames"][0]["lens"], 22.5);
     assert_eq!(d["frames"][0]["dof"], false);
     assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("cannot be recovered")));
-    match std::process::Command::new("python3").args(["-c", "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())", &output]).status() {
-        Ok(status) => assert!(status.success(), "generated script must parse even with quoted/Unicode paths"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => eprintln!("Python AST oracle skipped: python3 is not installed"),
-        Err(e) => panic!("Python AST oracle failed: {e}"),
+    match python() {
+        Some(exe) => {
+            let status = std::process::Command::new(exe)
+                .args(["-c", "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())", &output])
+                .status()
+                .unwrap();
+            assert!(status.success(), "generated script must parse even with quoted/Unicode paths");
+        }
+        None => eprintln!("Python AST oracle skipped: Python is not installed"),
     }
+}
+
+/// The first interpreter that really runs: Windows can provide `python3` as a Microsoft Store stub
+/// that only exits with an error.
+fn python() -> Option<&'static str> {
+    ["python3", "python", "py"].into_iter().find(|exe| std::process::Command::new(exe).arg("--version").output().is_ok_and(|o| o.status.success()))
 }
 
 #[test]
@@ -236,6 +247,35 @@ fn blender_export_rejects_malformed_solves_without_panicking() {
         let result = s.execute_checked("camera.exportBlender", json!({"layer": lid.0, "path": path("corrupt.py")}));
         assert!(result.is_err(), "must reject {variant}");
     }
+}
+
+#[test]
+fn scripts_write_named_files_only_with_permission() {
+    let (mut s, _, _) = fixture(false);
+    let dir = std::env::temp_dir().join(format!("ec-script-writes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    // The text of a project can be made to run as a batch file: this is what the setting stops.
+    let batch = at("startup.cmd");
+    for (id, params) in [
+        ("file.saveCopy", json!({"path": batch})),
+        ("file.saveAs", json!({"path": batch})),
+        ("shortcuts.export", json!({"path": batch})),
+        ("view.exportGuides", json!({"path": batch})),
+    ] {
+        let refused = s.execute_for_script(id, params.clone()).unwrap_err().to_string();
+        assert!(refused.contains("Allow Scripts to Write Files"), "{id}: {refused}");
+        assert!(!std::path::Path::new(&batch).exists(), "{id} wrote the file");
+    }
+    // Saving a project stays possible, and the same call works for the user and when allowed.
+    let project = at("saved.ecproj");
+    s.execute_for_script("file.saveAs", json!({"path": project})).unwrap();
+    assert!(std::path::Path::new(&project).exists());
+    s.execute("file.saveCopy", json!({"path": at("user.json")})).unwrap();
+    s.prefs.scripting.allow_scripts_write_files = true;
+    s.execute_for_script("file.saveCopy", json!({"path": batch})).unwrap();
+    assert!(std::path::Path::new(&batch).exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -1267,6 +1267,11 @@ fn an_unsupported_stream_reports_why_it_shows_no_picture() {
     let f = probe(&p).expect("probe");
     let pool = MediaPool::new();
     assert_eq!(pool.problem(&f), None, "nothing is wrong before a frame was asked for");
+    // A thumbnail that fails leaves the viewer's notice to the viewer's own frames.
+    pool.background(&mut || {
+        pool.frame(ItemId(1), &f, Tick::ZERO);
+    });
+    assert_eq!(pool.problem(&f), None, "a thumbnail isn't what the file is judged by");
     if pool.frame(ItemId(1), &f, Tick::ZERO).is_some() {
         // a decoder that handles 4:2:2 (FilmCraft's, or a hardware one): no notice
         assert_eq!(pool.problem(&f), None);

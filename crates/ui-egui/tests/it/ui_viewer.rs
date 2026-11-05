@@ -13,6 +13,11 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use serde_json::json;
 
+// egui_kittest prefers software adapters. Concurrent screenshot devices can crash Windows'
+// WARP driver (d3d10warp.dll), just as concurrent llvmpipe devices can on Linux. Only pixel
+// tests hold this lock; the remaining interaction tests still run in parallel.
+static SCREENSHOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn app() -> EffectcraftApp {
     let mut s = Session::default();
     s.execute("comp.new", json!({"name": "View", "width": 640, "height": 360, "duration": 4})).unwrap();
@@ -540,6 +545,7 @@ fn fill_rgb(h: &Harness<'_, EffectcraftApp>) -> [u8; 3] {
 /// invisible, and in the tool's own form — only the Rectangle fills the corner of the box.
 #[test]
 fn shape_drag_ghost_shows_the_tools_own_shape_while_dragging() {
+    let _gpu = SCREENSHOT_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (from, to) = ([140.0, 100.0], [400.0, 300.0]);
     let centre = [270.0, 200.0];
     // 4 comp px inside the box's top-left corner: inside a rectangle, outside every other kind
@@ -573,6 +579,7 @@ fn shape_drag_ghost_shows_the_tools_own_shape_while_dragging() {
 /// lie: Shift squares the box and Ctrl/Cmd draws it from the press point (as in After Effects), both live.
 #[test]
 fn shape_drag_ghost_normalises_the_same_way_as_the_release() {
+    let _gpu = SCREENSHOT_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let from = [140.0f64, 100.0];
     let to = [400.0f64, 260.0];
     // (mods, centre, size): Shift squares the box from its top-left, Ctrl/Cmd centres it on the press.
@@ -611,6 +618,7 @@ fn shape_drag_ghost_normalises_the_same_way_as_the_release() {
 /// and not painted with the Fill, where a shape drawn into the selected shape layer is.
 #[test]
 fn shape_drag_ghost_shows_where_the_shape_will_land() {
+    let _gpu = SCREENSHOT_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (from, to) = ([140.0, 100.0], [400.0, 300.0]);
     let centre = [270.0, 200.0];
 
@@ -645,6 +653,7 @@ fn shape_drag_ghost_shows_where_the_shape_will_land() {
 /// for it would freeze the viewer on the last completed frame for the whole drag.
 #[test]
 fn a_layer_drag_moves_the_picture_while_the_button_is_down() {
+    let _gpu = SCREENSHOT_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut h = harness();
     let box_ = h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == "Box").unwrap().id;
     h.state_mut().session.execute("layer.select", json!({"layers": [box_.0]})).unwrap();
@@ -863,6 +872,31 @@ fn hidden_shape_layer_keeps_its_controls_and_can_still_scale() {
     assert_ne!(scale(&h), before, "a hidden layer's handle still scales it");
 }
 
+/// A selected hidden AV layer has handles (#1769), so it also follows a drag that starts on another
+/// selected layer: otherwise the result would depend on whose handle is grabbed.
+#[test]
+fn a_hidden_selected_layer_follows_drags_of_the_visible_one() {
+    let mut h = harness();
+    let (plate, bx) = (layer_id(&h, "Plate"), layer_id(&h, "Box"));
+    {
+        let s = &mut h.state_mut().session;
+        s.execute("layer.select", json!({"layers": [bx, plate]})).unwrap();
+        s.execute("layer.setSwitch", json!({"layers": [plate], "switch": "video", "value": false})).unwrap();
+    }
+    h.run_steps(2);
+    let prop = |h: &Harness<'_, EffectcraftApp>, path: &str| {
+        h.state().session.active_comp().unwrap().layer(LayerId(plate)).unwrap().props.prop(path).unwrap().value.as_vec3()
+    };
+    let scale = prop(&h, "transform/scale");
+    let from = rect(&h, &format!("viewer.handle.{bx}.5")).center();
+    drag(&mut h, from, from + vec2(24.0, 0.0));
+    assert_ne!(prop(&h, "transform/scale"), scale, "the hidden layer scales with the grabbed one");
+    let position = prop(&h, "transform/position");
+    let from = screen(&h, [320.0, 180.0]);
+    drag(&mut h, from, from + vec2(30.0, 20.0));
+    assert_ne!(prop(&h, "transform/position"), position, "and moves with it");
+}
+
 /// #1964: Shift-dragging a selected mask vertex keeps it to the axis it moves along most, as a
 /// Shift-dragged layer does; without Shift it moves freely.
 #[test]
@@ -1058,6 +1092,46 @@ fn motion_path_key_drag_edits_that_key() {
 fn mask_path(h: &Harness<'_, EffectcraftApp>, name: &str) -> effectcraft_engine::keyframe::ShapePath {
     let l = h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == name).unwrap().clone();
     l.masks().unwrap().groups().next().unwrap().get("path").unwrap().value.as_path().unwrap().clone()
+}
+
+#[test]
+fn selection_alt_click_converts_mask_vertex_before_setting_active_layer() {
+    let mut h = harness();
+    let plate = layer_id(&h, "Plate");
+    let box_id = layer_id(&h, "Box");
+    h.state_mut().session.execute("mask.new", json!({"layer":plate,"vertices":[[100,60],[500,60],[500,300],[100,300]],"closed":true})).unwrap();
+    h.state_mut().session.execute("layer.select", json!({"layers":[plate,box_id],"active":box_id})).unwrap();
+    h.state_mut().ui.tool = Tool::Selection;
+    h.run_steps(3);
+    let original = h.state().session.project.to_file_json().unwrap();
+    let path = mask_path(&h, "Plate");
+    let undo = h.state().session.history.undo.len();
+    let alt_click = |h: &mut Harness<'_, EffectcraftApp>, at: Pos2| {
+        let mods = egui::Modifiers { alt: true, ..Default::default() };
+        h.event(Event::ModifiersChanged(mods));
+        h.event(Event::PointerMoved(at));
+        h.step();
+        for pressed in [true, false] {
+            h.event(Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: mods });
+            h.step();
+        }
+        h.event(Event::ModifiersChanged(egui::Modifiers::NONE));
+        h.run_steps(3);
+    };
+    let at = screen(&h, [100., 60.]);
+    alt_click(&mut h, at);
+    let converted = mask_path(&h, "Plate");
+    assert_ne!(converted.in_tangents[0], path.in_tangents[0], "Alt-click must convert the mask vertex");
+    assert_eq!(h.state().session.active_layer(), Some(LayerId(box_id)));
+    assert_eq!(h.state().session.history.undo.len(), undo + 1);
+    h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(h.state().session.project.to_file_json().unwrap(), original);
+    h.run_steps(40);
+    let at = screen(&h, [200., 180.]);
+    alt_click(&mut h, at);
+    assert_eq!(h.state().session.active_layer(), Some(LayerId(plate)));
+    assert_eq!(h.state().session.history.undo.len(), undo);
+    assert_eq!(h.state().session.project.to_file_json().unwrap(), original);
 }
 
 /// #1544: a Shift-click with the Pen puts the next point straight below, beside or diagonal to the
@@ -1481,6 +1555,28 @@ fn puppet_harness() -> (Harness<'static, EffectcraftApp>, u64, u64) {
     h.state_mut().ui.tool = Tool::PuppetBend;
     h.run_steps(3);
     (h, id, bend)
+}
+
+/// Puppet pins follow the layer box: none on a locked layer, own or by its folder; a hidden
+/// layer keeps them (#1769).
+#[test]
+fn puppet_pins_follow_the_box_on_locked_and_hidden_layers() {
+    for (case, shown) in [("own Lock", false), ("folder Lock", false), ("own Video", true)] {
+        let (mut h, id, bend) = puppet_harness();
+        let s = &mut h.state_mut().session;
+        match case {
+            "own Lock" => s.execute("layer.setSwitch", json!({"layers": [id], "switch": "lock", "value": true})).map(|_| ()),
+            "own Video" => s.execute("layer.setSwitch", json!({"layers": [id], "switch": "video", "value": false})).map(|_| ()),
+            _ => {
+                let g = s.execute("layer.group", json!({"layers": [id]})).unwrap()["group"].as_u64().unwrap();
+                s.execute("layer.groupUpdate", json!({"group": g, "locked": true})).map(|_| ())
+            }
+        }
+        .unwrap();
+        s.execute("layer.select", json!({"layers": [id]})).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.state().auto.find(&format!("viewer.puppetPin.{bend}")).is_some(), shown, "{case}");
+    }
 }
 
 fn pin_value(h: &Harness<'_, EffectcraftApp>, layer: u64, pin: u64, prop: &str) -> f64 {

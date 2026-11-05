@@ -39,12 +39,12 @@ fn includes_are_inlined_relative_to_the_script() {
     write(&dir.join("vendor/extra.jsx"), "var extra = 40;");
     write(
         &dir.join("main.jsx"),
-        "#target aftereffects\n#targetengine \"main\"\n#strict on\n//@include 'lib/math.jsx'\n#includepath \"vendor;lib\"\n#include \"extra.jsx\";\n#include \"util.jsxinc\"\n[twice(1) + extra, unit, $.fileName.split('\\\\').pop().split('/').pop()]",
+        "#target aftereffects\n#targetengine \"main\"\n#strict on\n//@include 'lib/math.jsx'\n#includepath \"vendor;lib\"\n#include \"extra.jsx\";\n#include \"util.jsxinc\"\n[twice(1) + extra, unit, $.fileName]",
     );
     let mut s = session();
     let o = run_file(&mut s, &dir.join("main.jsx"));
     assert!(o.error.is_none(), "{:?}", o.error);
-    assert_eq!(o.result, json!([42, "px", "main.jsx"]));
+    assert_eq!(o.result, json!([42, "px", dir.join("main.jsx").to_string_lossy()]));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

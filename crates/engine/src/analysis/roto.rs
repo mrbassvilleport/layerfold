@@ -827,10 +827,9 @@ impl Session {
                 let (cid, lid, uid, strokes) = (job.comp, job.layer, job.effect, job.strokes.clone());
                 let what = if job.object_matte { "prompt" } else { "strokes" };
                 let r = self.edit("Freeze", None, |p, _| {
-                    let g = p
-                        .comp_mut(cid)
-                        .and_then(|c| c.layer_mut(lid))
-                        .and_then(|l| l.props.find_group_mut(uid))
+                    let g = crate::commands::layer_mut(p, cid, lid)?
+                        .props
+                        .find_group_mut(uid)
                         .ok_or_else(|| crate::EngineError::Other(format!("the {name} effect was removed")))?;
                     if guard_of(g) != strokes {
                         return Err(crate::EngineError::Other(format!("the {what} changed while freezing")));
@@ -838,11 +837,12 @@ impl Session {
                     set_str(g, FROZEN, fc.to_json());
                     Ok(())
                 });
+                let error = r.is_err();
                 let msg = match r {
                     Ok(()) => format!("{name}: froze {} frame(s) in {:.1} s", fc.frames.len(), st.elapsed),
                     Err(e) => format!("{name}: {e}"),
                 };
-                self.events.push(Event::Toast { message: msg, error: false });
+                self.events.push(Event::Toast { message: msg, error });
             }
         }
         true
@@ -856,8 +856,14 @@ impl Session {
         // Edited instances stay pending while the model they will segment with is still loading.
         let loading = self.roto_model_loading();
         if auto && self.roto_job.is_none() && self.offloaded_roto().is_none() && self.state.roto.auto_propagate && !loading {
-            while let Some((c, l, e)) = self.roto_pending.first().copied() {
-                self.roto_pending.remove(0);
+            let mut i = 0;
+            while let Some((c, l, e)) = self.roto_pending.get(i).copied() {
+                // A layer in a locked folder stays queued until the folder is unlocked.
+                if self.project.comp(c).is_some_and(|cm| crate::commands::locked_by_group(cm, l)) {
+                    i += 1;
+                    continue;
+                }
+                self.roto_pending.remove(i);
                 match self.start_roto(c, l, e, RotoTask::Propagate, Direction::Both, false) {
                     Ok(_) => return true,
                     Err(message) => self.events.push(Event::Toast { message, error: true }),

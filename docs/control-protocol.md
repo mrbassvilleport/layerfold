@@ -23,12 +23,19 @@ unknown option prints an error and the app exits with status 1 before it opens a
   the server closes the connection, so nothing sent after it runs. An HTTP request (for example a web
   page's cross-origin `fetch` to `127.0.0.1:<port>`) therefore can't smuggle a command in its body: its
   request line is rejected first. At most 16 connections are served at once; further ones get an error
-  line and are closed. The port has no authentication, so only enable it while you use it.
+  line and are closed.
+- **First request:** `{"method": "auth", "params": {"token": "..."}}`. The app writes the token when it
+  opens the port, to `control-<port>.token` in its config directory (`%APPDATA%\Layerfold` on Windows),
+  which only your user can read (a portable copy keeps it beside the program, so whoever can read that
+  folder can use the port). Anything else first gets an error and the connection closes. A
+  connection that hasn't sent the token within 10 seconds is closed too, so idle ones free their slot.
+  `effectcraft-cli --bridge` does this for you. Still enable the port only while you use it.
 
 Quick test:
 
 ```sh
-printf '{"id":1,"method":"engine.execute","params":{"command":"comp.new","params":{"name":"A"}}}\n' | nc 127.0.0.1 9877
+token=$(cat ~/.config/layerfold/control-9877.token)
+printf '{"method":"auth","params":{"token":"%s"}}\n{"id":1,"method":"engine.execute","params":{"command":"comp.new","params":{"name":"A"}}}\n' "$token" | nc 127.0.0.1 9877
 ```
 
 ## Engine
@@ -52,6 +59,38 @@ export formats, parity summary), `jobs.list` (Progress panel jobs, e.g. the back
 
 Every engine command is reachable through `engine.execute`, and every interactive widget of every
 panel registers an element id; both are enforced by `crates/ui-egui/tests/it/ui_agent_audit.rs`.
+
+Organizational layer folders can nest and are independent of transform parenting and blend isolation. `layer.group {layers?, name?}`
+gathers the layers at the active layer's stack position, preserving their relative order and timing,
+and returns `{group}`. Creating a folder and gathering layers is one undo step. `layer.groupUpdate
+{group, name?, collapsed?, video?, audio?, locked?, merge?}`, `layer.groupAdd {group, layers?}`, `layer.groupRemove {layers?}`, and
+`layer.ungroup {group?, layers?}` edit folders through the same history. Ungrouping keeps the layers;
+removing members promotes them one level, immediately after their former folder. Empty folders disappear.
+`comp.info.layerGroups` reports `{id, name, collapsed, members, parent, video, audio, locked}` records;
+`members` includes all descendant leaf layers in stack order. Nesting is bounded to 32 groups.
+Video and audio require both the leaf switch and every ancestor switch; locking any ancestor locks
+the leaf. Master switches retain all children's raw settings. The metadata is saved in `.ecproj`.
+Original builds ignore this metadata, including its visibility, audio and lock gates.
+
+`layer.drop {layers?, group?, into?, above?}` atomically changes stack order and folder membership.
+`group` moves a complete folder (all members must be unlocked); otherwise `layers` defaults to the
+selection and skips locked layers. `into` joins a folder, with `above` optionally choosing one of its
+members as the insertion point; without `above`, layers append to that folder. Without `into`, the
+drop is outside folders, before `above` or at the end of the stack. A root drop before a folder member
+lands before the entire folder. Moving a folder into another retains its subtree; cycles, excessive
+depth and locked destinations are rejected without changing the document. One drop is one undo step;
+a drop with unchanged order and membership adds no history entry.
+
+`layer.setActive {layer}` requires an already selected layer, changes only editor state, and adds no
+undo step. `layer.select` accepts `active` to choose the primary member of a new batch selection.
+`project.summary.activeLayer` and `ui.inspect.activeLayer` report the effective primary id or null.
+Alt-click on a selected layer in the timeline or Selection-tool viewer calls `layer.setActive`.
+In the timeline this covers the layer number, name and time pane; switches and property twirls
+retain their existing Alt gestures.
+Automation ids include `timeline.layer.<id>.active`, `viewer.active.<id>`,
+`timeline.folder.<id>.row`, `.twirl`, `.nameEdit`, `.video`, `.audio`, `.locked`, and `.span` (the read-only coverage bar of the folder's layers in the time pane; click selects them, double-click expands or collapses). Collapsed descendants are absent from the
+timeline registry and from visible snap targets; a visible folder's coverage edges stay Shift-snap targets
+(`Group: <name>`), computed from its layers that are not part of the running gesture.
 
 ## UI state
 
@@ -102,7 +141,7 @@ Points are logical window coordinates. A target is `{id}` (the element's centre;
 |---|---|
 | `ui.click` | `{id \| x,y, button?: left\|right\|middle, count?, modifiers?}` |
 | `ui.move` | `{id \| x,y}` |
-| `ui.drag` | `{from: target, to: target, steps? (12), modifiers?}`: press, move, release |
+| `ui.drag` | `{from: target, to: target, button?: left\|right\|middle, steps? (12, at most 2048), modifiers?}`: press, move, release; left by default |
 | `ui.scroll` | `{id \| x,y, dx?, dy?, unit?: point\|line, source?: wheel\|trackpad, pinch?, modifiers?}`: `line` is a mouse wheel (zooms the viewers); `point` (default) is a pixel-precise scroll; `source: trackpad` pans the viewers (as on macOS); with no `source` the viewers take a scroll in points as a wheel until one moves on both axes (a trackpad: from then on it pans); `pinch` is a trackpad pinch's zoom factor |
 | `ui.key` | `{key}`, for example `Space`, `F9`, `Cmd+Z`, `Cmd+Shift+Z`, `PageDown`, `Escape` |
 | `ui.type` | `{text}`: text input into the focused field |

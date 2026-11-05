@@ -1,0 +1,5 @@
+{
+  "directory": "llvm-mingw-20261006-msvcrt-x86_64",
+  "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-msvcrt-x86_64.zip",
+  "sha256": "24847b37a951c8583c3f7ec061de2eb87f6394215c8ef3fdc4565ed0835396e1"
+}

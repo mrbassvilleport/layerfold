@@ -522,6 +522,42 @@ fn object_matte_reprompt_updates_the_instance() {
     assert!(s.execute_checked("objectMatte.apply", json!({"layer": clip.0, "effect": 999_999, "point": c})).is_err());
 }
 
+/// Automatic propagation leaves a layer of a locked folder queued until the folder is unlocked.
+#[test]
+fn automatic_object_matte_propagation_waits_for_an_unlocked_folder() {
+    hold_roto_cache_test_lock();
+    let (mut s, clip, solid) = setup(|f| draw(center(f)));
+    let cid = s.active_comp_id().unwrap();
+    s.edit("remove solid", None, |p, _| {
+        p.comp_mut(cid).unwrap().layers.retain(|l| l.id != solid);
+        for it in p.items.values_mut() {
+            if let effectcraft_project::ItemKind::Footage(f) = &mut it.kind {
+                f.path = "object-matte-locked.mov".into();
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    let r = s.execute_checked("objectMatte.apply", json!({"layer": clip.0, "point": center(0), "before": 0, "after": 24, "frame": 0})).unwrap();
+    let uid = r["effect"].as_u64().unwrap();
+    assert!(s.roto_pending.contains(&(cid, clip, uid)));
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    s.poll_roto(true);
+    assert!(!s.is_roto_running(), "no propagation on a locked folder");
+    assert!(s.roto_pending.contains(&(cid, clip, uid)), "still queued");
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": false})).unwrap();
+    s.poll_roto(true);
+    assert!(s.is_roto_running(), "runs once unlocked");
+    let _ = s.execute("roto.cancel", json!({}));
+    let t = std::time::Instant::now();
+    while s.is_roto_running() {
+        assert!(t.elapsed().as_secs() < 120);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_roto(false);
+    }
+}
+
 /// Object Matte runs in the background like Roto Brush propagation: queued by the edit, a job
 /// that returns at once and reports progress, stops when cancelled (keeping what it computed),
 /// computes the tracked frames when left to run, and Freeze stores mattes that renders then use

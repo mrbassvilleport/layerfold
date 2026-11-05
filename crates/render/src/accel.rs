@@ -228,7 +228,14 @@ impl<'a> Renderer<'a> {
         comp.layers
             .iter()
             .rev()
-            .filter(|l| l.is_active_at(t) && l.has_video() && !l.environment && (!any_solo || l.switches.solo) && (self.opts.guides || !l.switches.guide))
+            .filter(|l| {
+                l.is_active_at(t)
+                    && l.has_video()
+                    && comp.layer_group_video_enabled(l.id)
+                    && !l.environment
+                    && (!any_solo || l.switches.solo)
+                    && (self.opts.guides || !l.switches.guide)
+            })
             .collect()
     }
 

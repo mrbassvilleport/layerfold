@@ -96,6 +96,7 @@ pub use error::{EngineError, Result};
 pub use event::Event;
 pub use fonts::{FontRow, font_features, font_menu, font_preview, font_styles, text_families};
 pub use services::{FsServices, Importer, Services};
+pub use session::SCRIPT_WRITES;
 pub use session::upgrade_effects;
 
 pub struct Session {
@@ -206,6 +207,8 @@ pub struct Session {
     pub sys_memory: Option<sysinfo::SysMemory>,
     /// The keyframe drag in progress (`keys.move` with a merge key).
     pub key_move: Option<KeyMove>,
+    /// A `layer.quickOffset` drag in progress (`from` and `total` unused).
+    pub layer_move: Option<KeyMove>,
     /// Reads the system's memory in the background for [`Session::memory_tick`].
     pub memory_watch: sysinfo::MemoryWatch,
     /// Reads the disk cache's free disk space in the background for [`Session::memory_tick`].
@@ -333,6 +336,7 @@ impl Default for Session {
             script_ui: scriptui::ScriptUi::default(),
             sys_memory: None,
             key_move: None,
+            layer_move: None,
             memory_watch: Default::default(),
             disk_watch: Default::default(),
             applied_nested_switches: None,

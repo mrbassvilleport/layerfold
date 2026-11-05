@@ -419,6 +419,12 @@ fn cards_and_environment_light() {
     assert!(c2[0] > 0.3, "{c2:?}");
     // The environment layer itself is not drawn.
     assert_eq!(lit.data[80 * 120 + 110][3], 0.0);
+    // Like its own Video switch, a hidden folder doesn't stop the layer lighting.
+    let c = p.comp_mut(cid).unwrap();
+    let env_id = c.layers.iter().find(|l| l.environment).unwrap().id;
+    c.layer_groups = vec![effectcraft_project::LayerGroup { id: 1, name: "Hidden".into(), members: vec![env_id], video: false, ..Default::default() }];
+    let hidden = render(&p, cid).data[20 * 120 + 30];
+    assert!((hidden[0] - c2[0]).abs() < 1e-4, "{hidden:?} {c2:?}");
 }
 
 /// An Environment light with no Source and no Environment Layer lights the scene with a flat
@@ -1040,6 +1046,13 @@ fn track_mattes_in_advanced_3d() {
         Some(effectcraft_project::TrackMatte { layer: matte, kind: effectcraft_project::MatteKind::AlphaInverted });
     let img = render(&p, cid);
     assert!(img.data[30 * 120 + 30][3] < 0.01 && img.data[70 * 120 + 100][3] > 0.99);
+    // A matte in a hidden folder still mattes, like the matte with its own Video off.
+    let c = p.comp_mut(cid).unwrap();
+    c.layer_groups = vec![effectcraft_project::LayerGroup { id: 1, name: "Hidden".into(), members: vec![matte], video: false, ..Default::default() }];
+    c.layers[1].track_matte = Some(effectcraft_project::TrackMatte { layer: matte, kind: effectcraft_project::MatteKind::Alpha });
+    let img = render(&p, cid);
+    let (inside, outside) = (img.data[30 * 120 + 30], img.data[70 * 120 + 100]);
+    assert!(inside[3] > 0.99 && inside[0] > 0.99 && outside[3] < 0.01, "{inside:?} {outside:?}");
 }
 
 #[test]

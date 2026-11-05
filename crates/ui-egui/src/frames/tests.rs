@@ -859,9 +859,11 @@ fn audio_lock_and_shy_switches_keep_the_frames() {
     let switch = |s: &mut Session, comp: ItemId, layer: u64, sw: &str, v: bool| {
         s.execute("layer.setSwitch", json!({"comp": comp.0, "layers": [layer], "switch": sw, "value": v})).unwrap();
     };
-    for (comp, layer, sw) in [(outer, nested, "audio"), (outer, nested, "lock"), (outer, nested, "shy"), (inner, solid, "audio"), (inner, solid, "shy")] {
-        // Audio off; Lock and Shy on.
-        switch(&mut s, comp, layer, sw, sw != "audio");
+    for (comp, layer, sw) in
+        [(outer, nested, "audio"), (outer, nested, "lock"), (outer, nested, "shy"), (inner, solid, "audio"), (inner, solid, "shy"), (outer, nested, "frames")]
+    {
+        // Audio and Frames off; Lock and Shy on.
+        switch(&mut s, comp, layer, sw, sw != "audio" && sw != "frames");
         assert_eq!(at(&s), o0, "{sw} on in {comp:?}");
     }
     s.execute("comp.setSwitch", json!({"comp": outer.0, "switch": "hideShy", "value": true})).unwrap();

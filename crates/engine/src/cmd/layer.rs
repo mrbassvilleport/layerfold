@@ -10,7 +10,10 @@ use effectcraft_project::{
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, b_p, bad, comp_id, f_p, has_comp, has_layers, layer_mut, layer_p, layers_p, merge_p, resolve_layer, str_p, unlocked};
+use super::{
+    CommandSpec, b_p, bad, comp_id, f_p, group_unlocked, has_comp, has_layers, layer_groups, layer_mut, layer_p, layers_p, locked_by_group, locked_dependant,
+    merge_p, resolve_layer, str_p, unlocked,
+};
 use crate::{EngineError, Result, Session, cmd};
 
 mod contents;
@@ -24,14 +27,14 @@ mod transform;
 
 use contents::{add_mask, add_shape_item, mask_props, set_text};
 use create::{add_item, new_adjustment, new_null, new_shape, new_solid, new_text};
-pub(crate) use create::{color_p, index_p, insert_layer, insert_layer_at, place, position_p};
+pub(crate) use create::{color_p, index_p, insert_layer, insert_layer_at, insertion_index, place, position_p};
 pub(crate) use parent::parent_fixes;
 use parent::set_parent;
 use replace::{has_replace_source, replace_source};
 pub(crate) use select::select_only;
 use select::{select, select_next, select_prev, select_step};
 use switches::{blend, rename, set_comment, set_switch, track_matte};
-use timing::{arrange, move_frames, precompose, slip, timing};
+use timing::{arrange, move_frames, precompose, slip, timing, trim_to_source};
 use transform::{has_layer_settings, layer_settings, transform_op};
 pub(crate) use transform::{offset_position, transform_default, update_position};
 
@@ -92,7 +95,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_replace_source,
             replace_source
         ),
-        cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
+        cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?, active?: selected layer id}", has_comp, select),
         cmd!("layer.selectNext", "Select Next Layer", [], Some("Cmd+ArrowDown"), "{add?}", has_comp, select_next),
         cmd!("layer.selectPrevious", "Select Previous Layer", [], Some("Cmd+ArrowUp"), "{add?}", has_comp, select_prev),
         cmd!("layer.extendSelectionNext", "Extend Selection to Next Layer", [], Some("Cmd+Shift+ArrowDown"), "{}", has_comp, |s, _| select_step(
@@ -110,7 +113,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Layer Switch",
             [],
             None,
-            "{layers?, switch: video|audio|solo|lock|shy|collapse|quality|fx|frameBlend|motionBlur|adjustment|threeD|guide|preserveTransparency, value?, merge?, others? (the named layers alone: the other layers get the opposite state, or come back)}",
+            "{layers?, switch: video|audio|solo|lock|shy|collapse|quality|fx|frameBlend|motionBlur|adjustment|threeD|guide|frames|preserveTransparency, value?, merge?, others? (the named layers alone: the other layers get the opposite state, or come back)}",
             has_layers,
             set_switch
         ),
@@ -153,10 +156,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slip Edit",
             [],
             None,
-            "{layers?, delta? (seconds) | frames?, merge?} → {requested, slipped: [{layer, delta, clamped}]}",
+            "{layers?, delta? (seconds) | frames?, holdKeys?: keep keyframes in place in the comp, merge?} → {requested, slipped: [{layer, delta, clamped}]}",
             has_layers,
             slip
         ),
+        cmd!("layer.trimToSource", "Trim Layer to Source", [], None, "{layers?}", has_layers, trim_to_source),
         cmd!("layer.slipBack", "Slip Edit 1 Frame Earlier", [], None, "{layers?}", has_layers, |s, p| {
             let mut p = p.clone();
             p["frames"] = json!(-1);

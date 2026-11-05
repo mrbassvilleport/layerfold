@@ -1,4 +1,7 @@
-# Contributing to EffectCraft
+# Contributing to Layerfold
+
+Layerfold is based on EffectCraft. On Windows, use `editor/scripts/cargo.ps1 --upstream` for the root
+workspace, as the README describes. The setup below is retained from EffectCraft as reference.
 
 Thanks for helping. Please read [AGENTS.md](AGENTS.md) first: its rules on assets and clean-room
 work apply to everyone, people and AI agents alike, and they are not negotiable.
@@ -105,5 +108,4 @@ rustflags = ["-C", "link-self-contained=yes", "-L", "native=C:/gnu-import-libs"]
 
 ## Talk to us
 
-Questions, ideas and bug reports are welcome on [Discord](https://discord.gg/artcraft) and in
-GitHub issues.
+Questions, ideas and bug reports are welcome in [Issues](https://github.com/mrbassvilleport/layerfold/issues).

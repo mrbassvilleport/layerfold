@@ -826,10 +826,9 @@ impl Session {
         for (id, kind, comp, layer, group, message, base) in results {
             let uid = group.uid;
             let r = self.edit(kind.label(), None, |p, _| {
-                let g = p
-                    .comp_mut(comp)
-                    .and_then(|c| c.layer_mut(layer))
-                    .and_then(|l| l.props.find_group_mut(uid))
+                let g = crate::commands::layer_mut(p, comp, layer)?
+                    .props
+                    .find_group_mut(uid)
                     .ok_or_else(|| crate::EngineError::Other("the analysed property was removed during the analysis".into()))?;
                 // Edits made while the job ran stay (#1249): only what the analysis changed is
                 // taken from its result.

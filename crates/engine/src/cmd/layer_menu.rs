@@ -154,7 +154,10 @@ fn expressions(s: &mut Session, p: &Value) -> Result<Value> {
     let on = b_p(p, "enabled").unwrap_or(true);
     let n = s.edit(if on { "Enable Expressions" } else { "Disable Expressions" }, None, |proj, _| {
         let mut n = 0;
-        for l in proj.comp_mut(cid).ok_or(EngineError::NoComp)?.layers.iter_mut_where(|l| ids.contains(&l.id)) {
+        for id in &ids {
+            // Like layer switches, this remains available under the leaf's own lock.
+            // The shared accessor still rejects a lock inherited from a folder.
+            let l = super::layer_mut(proj, cid, *id)?;
             l.props.walk_mut(&mut |pr| {
                 if let Some(e) = &mut pr.expr {
                     e.enabled = on;
@@ -596,6 +599,7 @@ fn markers_lock(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn delete_all_markers(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = super::group_unlocked(s, cid, ids, "layer.deleteAllMarkers")?;
     s.edit("Delete All Markers", None, |proj, _| {
         for l in proj.comp_mut(cid).ok_or(EngineError::NoComp)?.layers.iter_mut_where(|l| ids.contains(&l.id) && !l.markers_locked) {
             l.markers.clear();
@@ -645,6 +649,9 @@ fn track_matte_op(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(m) = l.track_matte {
                 hide.push(m.layer);
             }
+        }
+        if hide.iter().any(|m| c.layer(*m).is_some_and(|ml| ml.switches.video) && super::locked_by_group(c, *m)) {
+            return Err(bad("layer.trackMatte", "the matte layer belongs to a locked layer group"));
         }
         for m in hide {
             if let Some(ml) = c.layer_mut(m) {
@@ -833,6 +840,7 @@ fn sequence(s: &mut Session, p: &Value) -> Result<Value> {
         Some(_) => layers_p(s, p)?.1,
         None => s.state.selected_layers.clone(),
     };
+    let ids = super::group_unlocked(s, cid, ids, "layer.sequence")?;
     if ids.len() < 2 {
         return Err(bad("layer.sequence", "select two or more layers"));
     }

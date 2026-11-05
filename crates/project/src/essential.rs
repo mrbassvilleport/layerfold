@@ -718,6 +718,13 @@ pub fn offset_ids(p: &mut Project, offset: u64) {
         it.parent = it.parent.map(|f| ItemId(f.0.saturating_add(offset)));
         if let ItemKind::Comp(c) = &mut it.kind {
             let c = std::sync::Arc::make_mut(c);
+            for g in &mut c.layer_groups {
+                g.id = g.id.saturating_add(offset);
+                g.parent = g.parent.map(|id| id.saturating_add(offset));
+                for id in &mut g.members {
+                    id.0 = id.0.saturating_add(offset);
+                }
+            }
             for l in &mut c.layers {
                 offset_layer(l, offset);
             }

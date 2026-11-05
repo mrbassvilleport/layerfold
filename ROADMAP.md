@@ -1,5 +1,8 @@
 # EffectCraft Roadmap
 
+This is EffectCraft's roadmap, retained as reference. What Layerfold changes and its known limits
+are in [CHANGES.md](CHANGES.md).
+
 **Stage: alpha** · next: beta, ~30 points of "ready for real work" and ~350–620 h away
 
 > **Last reviewed:** 2026-10-22 · **Last updated:** 2026-10-30 · **Change:** minor (features of 30 October in the progress log: text Line Join, Timeline drag-reorder and multi-select of effects, viewer edge pan, ScriptUI drag capture and dock size; previously: localization recount after #1774) · **Target:** Adobe After Effects 2026 (26.5.0.89)
@@ -113,7 +116,6 @@ Ranked; detail in [docs/roadmap.md](docs/roadmap.md) and [docs/gaps.md](docs/gap
 | 5 | Performance: benchmarks at 1080p / 4K, real-time cached playback, hardware video (G5) | 50–100 |
 | 6 | Localization depth: effect names, all panels, Korean / Italian (G9) | 60–110 |
 
-Come tell us what matters most to you on [Discord](https://discord.gg/artcraft).
 
 ## Progress log
 

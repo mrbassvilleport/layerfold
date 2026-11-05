@@ -1,0 +1,12 @@
+# Reviewed source baseline; this file records a revision, it does not download updates.
+repository = "https://github.com/storytold/effectcraft"
+revision = "7870b5916ae0749d497d880989683bf2946d6c8b"
+version = "0.21.0"
+reviewed_on = "2026-11-04"
+integration_checked_on = "2026-11-04"
+filmcraft_revision = "09aaf9bf15d510eda1c413c0ccabb1d7e08b41c5"
+craft_ui_revision = "92d392cff132eaf53e13afff77f38b5c11b73aa0"
+craft_pdf_revision = "92d392cff132eaf53e13afff77f38b5c11b73aa0"
+craft_docpath_revision = "92d392cff132eaf53e13afff77f38b5c11b73aa0"
+craft_ecproj_format_revision = "ca1b5e2edb8568335c6c14f390307bd5beae8238"
+egui_revision = "6d518fc799681571963842f95b55a6b68431b15a"

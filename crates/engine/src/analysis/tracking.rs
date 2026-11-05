@@ -318,9 +318,9 @@ pub(crate) fn key(g: &mut PropGroup, m: &str, t: Tick, v: Value) {
 }
 
 /// Write analysed frames into the tracker's points.
-fn write_frames(p: &mut Project, job: &TrackJob, frames: &[FrameResult]) {
-    let Some(comp) = p.comp_mut(job.comp) else { return };
-    let Some(layer) = comp.layer_mut(job.layer) else { return };
+fn write_frames(p: &mut Project, job: &TrackJob, frames: &[FrameResult]) -> bool {
+    // A folder locked meanwhile keeps its layers unchanged.
+    let Ok(layer) = crate::commands::layer_mut(p, job.comp, job.layer) else { return false };
     for f in frames {
         for (uid, r, a) in &f.points {
             let Some(tp) = layer.props.find_group_mut(*uid) else { continue };
@@ -329,6 +329,7 @@ fn write_frames(p: &mut Project, job: &TrackJob, frames: &[FrameResult]) {
             key(tp, "attachPoint", f.layer_time, Value::Vec2(*a));
         }
     }
+    true
 }
 
 impl Session {
@@ -400,8 +401,11 @@ impl Session {
         let finished = job.is_finished();
         let changed = !frames.is_empty();
         if changed {
-            write_frames(Arc::make_mut(&mut self.project), job, &frames);
-            if self.state.active_comp == Some(job.comp)
+            if !write_frames(Arc::make_mut(&mut self.project), job, &frames) {
+                // The folder was locked meanwhile: stop, and say why when the job ends.
+                job.shared.cancel.store(true, Ordering::Relaxed);
+                lock(&job.shared.state).error = Some("the layer's group was locked".into());
+            } else if self.state.active_comp == Some(job.comp)
                 && let Some(last) = frames.last()
             {
                 self.state.times.insert(job.comp, last.comp_time);
@@ -567,7 +571,10 @@ pub fn apply(p: &mut Project, cid: ItemId, src: LayerId, tracker: Uid, dims: Dim
     let n = track.len();
     let size = effectcraft_render::effect_bounds(p, &comp, &target).0;
     let mut ids_next = p.next_id;
-    let layer = p.comp_mut(cid).and_then(|c| c.layer_mut(target_id)).ok_or("no target layer")?;
+    let layer = crate::commands::layer_mut(p, cid, target_id).map_err(|e| match e {
+        crate::EngineError::Project(_) => "no target layer".to_string(),
+        e => e.to_string(),
+    })?;
     if !corner_keys.is_empty() {
         let spec = effectcraft_effects::find("ec.distort.cornerpin").ok_or("Corner Pin is not available")?;
         let fx = layer.props.sub_mut("effects").ok_or("the target layer can't have effects")?;

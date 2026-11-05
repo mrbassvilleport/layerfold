@@ -4,14 +4,15 @@
 //! (an HTTP request line from a browser's cross-origin `fetch`, a stray `nc`, binary junk) gets
 //! one error reply and the connection is closed, so nothing after it is executed. Lines are
 //! bounded ([`MAX_LINE`]) and so is the number of open connections ([`MAX_CONNECTIONS`]); junk
-//! never reaches the UI thread. See `docs/control-protocol.md`.
+//! never reaches the UI thread. A connection first proves it belongs to this user with the token
+//! saved in the config directory (`auth`). See `docs/control-protocol.md`.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use effectcraft_ui_egui::ControlRequest;
 use serde_json::{Value, json};
@@ -21,6 +22,9 @@ use serde_json::{Value, json};
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 pub const MAX_CONNECTIONS: usize = 16;
+/// How long a new connection has to send the token. Without a limit, silent connections would hold
+/// every slot and lock the real client out.
+const AUTH_DEADLINE: Duration = Duration::from_secs(10);
 
 pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     let (tx, rx) = channel::<ControlRequest>();
@@ -31,12 +35,17 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
             return rx;
         }
     };
+    // Written only once the port is ours, so a second app can't replace the first one's token.
+    let Some(token) = effectcraft_host::create_control_token(port) else {
+        log::error!("control server not started: cannot save its token");
+        return rx;
+    };
     log::info!("control server listening on 127.0.0.1:{port}");
-    std::thread::spawn(move || accept_loop(listener, tx, ctx));
+    std::thread::spawn(move || accept_loop(listener, tx, ctx, &token, AUTH_DEADLINE));
     rx
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context) {
+fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: &str, deadline: Duration) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -47,16 +56,49 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
         let tx = tx.clone();
         let ctx = ctx.clone();
         let open = Arc::clone(&open);
+        let token = token.to_string();
         std::thread::spawn(move || {
-            serve(stream, &tx, &ctx);
+            serve(stream, &tx, &ctx, &token, deadline);
             open.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }
 
-fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context) {
+/// The socket, readable only until the deadline while `proved` is false. The time left is set again
+/// before every read, so sending a byte at a time can't extend it.
+struct PreAuthRead<'a> {
+    stream: TcpStream,
+    started: Instant,
+    deadline: Duration,
+    proved: &'a AtomicBool,
+}
+
+impl Read for PreAuthRead<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let timeout = if self.proved.load(Ordering::SeqCst) {
+            None
+        } else {
+            let left = self.deadline.saturating_sub(self.started.elapsed());
+            if left.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            Some(left)
+        };
+        self.stream.set_read_timeout(timeout)?;
+        self.stream.read(buf)
+    }
+}
+
+/// Every byte is compared, so the time taken doesn't tell how much of a guess was right.
+fn same_token(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
+fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str, deadline: Duration) {
     let Ok(read) = stream.try_clone() else { return };
-    serve_lines(read, stream, |method, params| {
+    let proved = AtomicBool::new(false);
+    let read = PreAuthRead { stream: read, started: Instant::now(), deadline, proved: &proved };
+    serve_lines(read, stream, Some((token, &proved)), |method, params| {
         let (req, rrx) = ControlRequest::new(method, params);
         tx.send(req).ok()?;
         ctx.request_repaint();
@@ -123,10 +165,13 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
 
 /// Serve requests from `read`, answering on `out`, until the peer closes, sends something that is
 /// not a request, or `handle` returns `None` (app gone). `handle` gets `(method, params)` and
-/// returns the reply object (the request's `id` is added here).
-fn serve_lines<R: Read, W: Write>(read: R, mut out: W, mut handle: impl FnMut(String, Value) -> Option<Value>) {
+/// returns the reply object (the request's `id` is added here). With `auth` (the token, and a flag
+/// set once it was sent), the first request must be `auth` with that token; anything else is refused
+/// and the connection closed.
+fn serve_lines<R: Read, W: Write>(read: R, mut out: W, auth: Option<(&str, &AtomicBool)>, mut handle: impl FnMut(String, Value) -> Option<Value>) {
     let mut reader = BufReader::new(read);
     let mut buf = Vec::new();
+    let mut authenticated = auth.is_none();
     loop {
         let reject = match read_bounded_line(&mut reader, &mut buf, MAX_LINE) {
             Ok(false) => return,
@@ -134,6 +179,19 @@ fn serve_lines<R: Read, W: Write>(read: R, mut out: W, mut handle: impl FnMut(St
             Ok(true) => match parse_line(&buf) {
                 Line::Blank => continue,
                 Line::Reject(e) => e,
+                Line::Request { id, method, params } if !authenticated => {
+                    let right =
+                        auth.filter(|(token, _)| method == "auth" && params.get("token").and_then(Value::as_str).is_some_and(|sent| same_token(token, sent)));
+                    if let Some((_, proved)) = right {
+                        authenticated = true;
+                        proved.store(true, Ordering::SeqCst);
+                        if writeln!(out, "{}", json!({"id": id, "ok": true, "result": null})).and_then(|()| out.flush()).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
+                    "the first request must be `auth` with the token from the config directory; closing the connection".to_string()
+                }
                 Line::Request { id, method, params } => {
                     let Some(mut r) = handle(method, params) else { return };
                     if let Some(o) = r.as_object_mut() {
@@ -158,12 +216,45 @@ mod tests {
     fn run(input: &[u8]) -> (Vec<Value>, Vec<String>) {
         let mut out = Vec::new();
         let mut calls = Vec::new();
-        serve_lines(input, &mut out, |m, _p| {
+        serve_lines(input, &mut out, None, |m, _p| {
             calls.push(m);
             Some(json!({"ok": true, "result": null}))
         });
         let replies = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).collect();
         (replies, calls)
+    }
+
+    fn run_with_token(input: &[u8]) -> (Vec<Value>, Vec<String>) {
+        let mut out = Vec::new();
+        let mut calls = Vec::new();
+        let proved = AtomicBool::new(false);
+        serve_lines(input, &mut out, Some(("secret", &proved)), |m, _p| {
+            calls.push(m);
+            Some(json!({"ok": true, "result": null}))
+        });
+        let replies = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).collect();
+        (replies, calls)
+    }
+
+    #[test]
+    fn nothing_runs_before_the_token() {
+        for input in [
+            &b"{\"method\":\"engine.execute\"}\n{\"method\":\"auth\",\"params\":{\"token\":\"secret\"}}\n{\"method\":\"a\"}\n"[..],
+            b"{\"method\":\"auth\",\"params\":{\"token\":\"wrong\"}}\n{\"method\":\"a\"}\n",
+            b"{\"method\":\"auth\"}\n{\"method\":\"a\"}\n",
+        ] {
+            let (r, calls) = run_with_token(input);
+            assert!(calls.is_empty(), "{calls:?}");
+            assert_eq!(r.len(), 1);
+            assert_eq!(r[0]["ok"], false);
+        }
+    }
+
+    #[test]
+    fn the_token_opens_the_connection() {
+        let (r, calls) = run_with_token(b"{\"id\":1,\"method\":\"auth\",\"params\":{\"token\":\"secret\"}}\n{\"id\":2,\"method\":\"a\"}\n");
+        assert_eq!(calls, ["a"]);
+        assert_eq!((r[0]["id"].clone(), r[0]["ok"].clone(), r[1]["id"].clone()), (json!(1), json!(true), json!(2)));
     }
 
     #[test]
@@ -242,7 +333,7 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
             let read = s.try_clone().unwrap();
-            serve_lines(read, s, |_, _| Some(json!({"ok": true})));
+            serve_lines(read, s, None, |_, _| Some(json!({"ok": true})));
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -261,7 +352,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, _rx) = channel::<ControlRequest>();
-        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default()));
+        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), "secret", AUTH_DEADLINE));
         // Idle connections are accepted in order and held open.
         let held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
         let mut extra = TcpStream::connect(addr).unwrap();
@@ -270,5 +361,66 @@ mod tests {
         BufReader::new(&mut extra).read_line(&mut line).unwrap();
         assert!(line.contains("too many control connections"), "{line}");
         drop(held);
+    }
+
+    #[test]
+    fn silent_and_dripping_connections_lose_their_slot_at_the_deadline() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, _rx) = channel::<ControlRequest>();
+        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), "secret", Duration::from_millis(300)));
+        let mut held: Vec<TcpStream> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        // Sending a byte at a time must not extend the deadline.
+        for _ in 0..12 {
+            let _ = held[0].write_all(b"{");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        for c in &mut held {
+            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut rest = Vec::new();
+            // EOF, or a reset when the server closes with bytes unread; only a timeout means it stayed open.
+            if let Err(e) = c.read_to_end(&mut rest) {
+                assert!(!matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock), "{e}");
+            }
+        }
+        // The slots are free again, so the real client gets in.
+        std::thread::sleep(Duration::from_millis(100));
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client.write_all(b"{\"id\":1,\"method\":\"auth\",\"params\":{\"token\":\"secret\"}}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(&mut client).read_line(&mut line).unwrap();
+        assert!(line.contains("\"ok\":true"), "{line}");
+    }
+
+    #[test]
+    fn a_connection_with_the_token_outlives_the_deadline() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            let proved = AtomicBool::new(false);
+            let read = PreAuthRead { stream: s.try_clone().unwrap(), started: Instant::now(), deadline: Duration::from_millis(200), proved: &proved };
+            serve_lines(read, s, Some(("secret", &proved)), |_, _| Some(json!({"ok": true})));
+        });
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(b"{\"id\":1,\"method\":\"auth\",\"params\":{\"token\":\"secret\"}}\n").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        c.write_all(b"{\"id\":2,\"method\":\"x\"}\n").unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut text = String::new();
+        c.read_to_string(&mut text).unwrap();
+        server.join().unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.lines().nth(1).unwrap().contains("\"id\":2"), "{text}");
+    }
+
+    #[test]
+    fn tokens_match_only_when_identical() {
+        assert!(same_token("abc", "abc"));
+        assert!(!same_token("abc", "abd"));
+        assert!(!same_token("abc", "ab"));
+        assert!(!same_token("", "a"));
     }
 }

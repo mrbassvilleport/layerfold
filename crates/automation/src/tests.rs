@@ -1779,7 +1779,10 @@ fn automation_roots_confine_the_footage_a_project_names() {
     let own = project("own.ecproj", &p(&read, "own.png"));
     let text = std::fs::read_to_string(&own).unwrap();
     assert!(text.contains(&p(&read, "own.png")) || text.contains("own.png"), "{text}");
-    let relative = text.replace(&p(&read, "own.png"), "../elsewhere/secret.png").replace("\"own.png\"", "\"../elsewhere/secret.png\"");
+    // The project is JSON: on Windows the path's backslashes are written escaped.
+    let escaped = serde_json::to_string(&p(&read, "own.png")).unwrap();
+    let relative = text.replace(&escaped, "\"../elsewhere/secret.png\"").replace("\"own.png\"", "\"../elsewhere/secret.png\"");
+    assert!(relative.contains("../elsewhere/secret.png"), "{relative}");
     std::fs::write(read.join("relative.ecproj"), relative).unwrap();
     projects.push(("relative", p(&read, "relative.ecproj")));
 

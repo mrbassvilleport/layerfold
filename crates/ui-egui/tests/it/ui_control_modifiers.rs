@@ -81,3 +81,27 @@ fn shift_drag_holds_shift_through_the_moves() {
     assert!(last > first + 1, "moves between press and release: {f:?}");
     assert!(f[first..=last].iter().all(|(_, m)| m.shift), "Shift held for the whole drag: {f:?}");
 }
+
+#[test]
+fn drag_supports_middle_button_and_rejects_unknown_buttons() {
+    let mut app = EffectcraftApp::new(Session::default());
+    send(&mut app, "ui.drag", json!({"from": {"x": 10, "y": 10}, "to": {"x": 90, "y": 40}, "button": "middle", "steps": 4}));
+    let mut buttons = vec![];
+    for _ in 0..16 {
+        let mut raw = egui::RawInput::default();
+        app.feed_synthetic(&mut raw);
+        app.mark_synthetic_applied();
+        for event in raw.events {
+            if let egui::Event::PointerButton { button, pressed, .. } = event {
+                buttons.push((button, pressed));
+            }
+        }
+    }
+    assert_eq!(buttons, [(egui::PointerButton::Middle, true), (egui::PointerButton::Middle, false)]);
+    let (req, _rx) = ControlRequest::new("ui.drag", json!({"from": {"x": 10, "y": 10}, "to": {"x": 90, "y": 40}, "button": "unknown"}));
+    let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &req, 0.0) else {
+        panic!("invalid button must return an error immediately");
+    };
+    assert!(reply["error"].is_string(), "{reply}");
+    assert!(frames(&mut app).is_empty(), "a rejected drag queues no events");
+}

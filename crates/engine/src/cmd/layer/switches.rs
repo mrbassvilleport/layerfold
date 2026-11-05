@@ -1,6 +1,6 @@
 use super::{
-    BlendMode, EngineError, FrameBlend, ItemId, KV, Layer, LayerId, MatteKind, Quality, Result, Session, TrackMatte, Value, b_p, bad, json, layer_mut, layer_p,
-    layers_p, merge_p, resolve_layer, str_p, unlocked,
+    BlendMode, EngineError, FrameBlend, ItemId, KV, Layer, LayerId, MatteKind, Quality, Result, Session, TrackMatte, Value, b_p, bad, group_unlocked, json,
+    layer_mut, layer_p, layers_p, locked_by_group, merge_p, resolve_layer, str_p, unlocked,
 };
 
 pub(super) fn set_switch(s: &mut Session, p: &Value) -> Result<Value> {
@@ -80,6 +80,7 @@ fn switch_value(l: &Layer, name: &str) -> Option<bool> {
         "adjustment" => sw.adjustment,
         "threeD" | "3d" | "3D" => sw.three_d,
         "guide" => sw.guide,
+        "frames" => sw.frames,
         "preserveTransparency" => l.preserve_transparency,
         _ => return None,
     })
@@ -106,6 +107,7 @@ fn set_switch_value(l: &mut Layer, name: &str, v: bool) {
             l.switches.three_d = v;
         }
         "guide" => sw.guide = v,
+        "frames" => sw.frames = v,
         "preserveTransparency" => l.preserve_transparency = v,
         _ => {}
     }
@@ -149,6 +151,7 @@ pub(super) fn rename(s: &mut Session, p: &Value) -> Result<Value> {
 /// The Timeline's Comment column.
 pub(super) fn set_comment(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, "layer.setComment")?;
     let text = str_p(p, "comment").ok_or_else(|| bad("layer.setComment", "missing `comment`"))?.to_string();
     s.edit("Layer Comment", None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
@@ -162,6 +165,7 @@ pub(super) fn set_comment(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub(super) fn blend(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, "layer.setBlendMode")?;
     let mode = str_p(p, "mode").and_then(BlendMode::from_name);
     let step = p.get("step").and_then(Value::as_i64).unwrap_or(0);
     if mode.is_none() && step == 0 {
@@ -214,6 +218,12 @@ pub(super) fn track_matte(s: &mut Session, p: &Value) -> Result<Value> {
         }),
         None => Some(MatteKind::Alpha),
     };
+    if let Some(m) = matte
+        && comp.layer(m).is_some_and(|ml| ml.switches.video)
+        && locked_by_group(comp, m)
+    {
+        return Err(bad("layer.setTrackMatte", "the matte layer belongs to a locked layer group"));
+    }
     s.edit("Track Matte", None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         if let Some(ml) = matte.and_then(|m| comp.layer_mut(m)) {

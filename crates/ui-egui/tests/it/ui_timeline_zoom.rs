@@ -110,16 +110,20 @@ fn drag(h: &mut Harness<'_, EffectcraftApp>, from: Pos2, to: Pos2) {
 
 /// [`drag`] with `modifiers` held.
 fn drag_with(h: &mut Harness<'_, EffectcraftApp>, from: Pos2, to: Pos2, modifiers: Modifiers) {
+    drag_button(h, from, to, modifiers, egui::PointerButton::Primary);
+}
+
+fn drag_button(h: &mut Harness<'_, EffectcraftApp>, from: Pos2, to: Pos2, modifiers: Modifiers, button: egui::PointerButton) {
     h.event(Event::ModifiersChanged(modifiers));
     h.event(Event::PointerMoved(from));
     h.step();
-    h.event(Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers });
+    h.event(Event::PointerButton { pos: from, button, pressed: true, modifiers });
     h.step();
     for k in 1..=8 {
         h.event(Event::PointerMoved(from + (to - from) * (k as f32 / 8.0)));
         h.step();
     }
-    h.event(Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers });
+    h.event(Event::PointerButton { pos: to, button, pressed: false, modifiers });
     h.run_steps(2);
     h.event(Event::ModifiersChanged(Modifiers::NONE));
     h.step();
@@ -463,4 +467,96 @@ fn the_timeline_follows_the_cti_past_its_edges() {
     let cti = h.state().session.time().seconds();
     let (s4, e4) = visible(&h);
     assert!(s4 > s3 && cti >= s4 && cti <= e4, "paged from {s3}..{e3} to {s4}..{e4} for the CTI at {cti}");
+}
+
+fn pan_harness() -> (Harness<'static, EffectcraftApp>, u64, u64) {
+    let (mut h, _) = harness();
+    for i in 0..24 {
+        h.state_mut().session.execute("layer.newSolid", json!({"name": format!("Row {i}"), "color": "#406080"})).unwrap();
+    }
+    let layer = h.state().session.active_comp().unwrap().layers[4].id.0;
+    h.state_mut().session.execute("prop.addKey", json!({"layer": layer, "path": "transform/opacity", "time": 10.6, "value": 70})).unwrap();
+    h.state_mut().session.execute("layer.select", json!({"layers": [layer]})).unwrap();
+    let uid = h.state().session.active_comp().unwrap().layer(effectcraft_engine::project::LayerId(layer)).unwrap().props.prop("transform/opacity").unwrap().uid;
+    let ctx = h.ctx.clone();
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "timeline.reveal.opacity", json!({})).unwrap();
+    h.run_steps(3);
+    h.state_mut().ui.timeline.pps = Some(200.0);
+    h.state_mut().ui.timeline.start = 10.0;
+    h.state_mut().ui.timeline.scroll_y = 40.0;
+    h.run_steps(3);
+    (h, layer, uid)
+}
+
+/// Middle-drag owns the gesture over bars, names, keys and the ruler, including outside the
+/// panel after the press. Navigation must never change the document, selection, CTI or Undo.
+#[test]
+fn middle_drag_pans_time_and_rows_without_editing() {
+    for target in ["bar", "name", "key", "ruler", "graph"] {
+        let (mut h, layer, uid) = pan_harness();
+        if target == "graph" {
+            h.state_mut().ui.timeline.graph_editor = true;
+            h.run_steps(3);
+            // Opening now fits the graph; pan from the same zoomed view as the other cases.
+            h.state_mut().ui.timeline.pps = Some(200.0);
+            h.state_mut().ui.timeline.start = 10.0;
+            h.run_steps(3);
+        }
+        let ruler = rect(&h, "timeline.ruler");
+        let from = match target {
+            "bar" => pos2(ruler.min.x + 140.0, rect(&h, &format!("timeline.layer.{layer}.bar")).center().y),
+            "name" => rect(&h, &format!("timeline.layer.{layer}.row")).center(),
+            "graph" => rect(&h, "timeline.graph").center(),
+            "key" => {
+                let id = h.state().auto.query(&format!("timeline.key.{uid}.")).first().unwrap().id.clone();
+                rect(&h, &id).center()
+            }
+            _ => pos2(ruler.min.x + 140.0, ruler.center().y),
+        };
+        let before = h.state().session.project.to_file_json().unwrap();
+        let selection = h.state().session.state.selected_layers.clone();
+        let keys = h.state().session.state.selected_keys.clone();
+        let time = h.state().session.time();
+        let undo = h.state().session.history.undo.len();
+        drag_button(&mut h, from, from + vec2(80.0, -40.0), Modifiers::NONE, egui::PointerButton::Middle);
+        assert!((h.state().ui.timeline.start - 9.6).abs() < 1e-6, "{target}: horizontal pan: {}", h.state().ui.timeline.start);
+        assert!((h.state().ui.timeline.scroll_y - 80.0).abs() < 1e-3, "{target}: vertical pan: {}", h.state().ui.timeline.scroll_y);
+        assert_eq!(h.state().session.project.to_file_json().unwrap(), before, "{target}: no document edit");
+        assert_eq!(h.state().session.state.selected_layers, selection, "{target}: layer selection");
+        assert_eq!(h.state().session.state.selected_keys, keys, "{target}: key selection");
+        assert_eq!(h.state().session.time(), time, "{target}: CTI");
+        assert_eq!(h.state().session.history.undo.len(), undo, "{target}: Undo");
+        h.event(Event::PointerMoved(from));
+        h.run_steps(2);
+        assert!((h.state().ui.timeline.start - 9.6).abs() < 1e-6, "{target}: release ends the pan");
+    }
+}
+
+#[test]
+fn middle_drag_stays_within_the_content_and_fit_only_scrolls_rows() {
+    let (mut h, _, _) = pan_harness();
+    let from = rect(&h, "timeline.ruler").center();
+    drag_button(&mut h, from, from + vec2(-200_000.0, -10_000.0), Modifiers::NONE, egui::PointerButton::Middle);
+    let (start, end) = visible(&h);
+    assert!(start > 590.0 && end <= 600.0 + 1e-6, "end of the comp: {start}..{end}");
+    let last_row = h.state().ui.timeline.scroll_y;
+    assert!(last_row.is_finite() && last_row > 0.0);
+    drag_button(&mut h, from, from + vec2(-200_000.0, -10_000.0), Modifiers::NONE, egui::PointerButton::Middle);
+    assert_eq!(h.state().ui.timeline.scroll_y, last_row, "does not scroll past the last row");
+    drag_button(&mut h, from, from + vec2(200_000.0, 10_000.0), Modifiers::NONE, egui::PointerButton::Middle);
+    assert_eq!((h.state().ui.timeline.start, h.state().ui.timeline.scroll_y), (0.0, 0.0));
+    h.state_mut().ui.timeline.pps = None;
+    h.run_steps(3);
+    drag_button(&mut h, from, from + vec2(-80.0, -40.0), Modifiers::NONE, egui::PointerButton::Middle);
+    assert_eq!((h.state().ui.timeline.pps, h.state().ui.timeline.start), (None, 0.0));
+    assert!((h.state().ui.timeline.scroll_y - 40.0).abs() < 1e-3);
+}
+
+#[test]
+fn middle_press_in_another_panel_cannot_start_a_timeline_pan() {
+    let (mut h, _, _) = pan_harness();
+    let from = rect(&h, "viewer.area").center();
+    let to = rect(&h, "timeline.ruler").center();
+    drag_button(&mut h, from, to, Modifiers::NONE, egui::PointerButton::Middle);
+    assert_eq!((h.state().ui.timeline.start, h.state().ui.timeline.scroll_y), (10.0, 40.0));
 }

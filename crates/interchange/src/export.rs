@@ -467,7 +467,7 @@ impl Exporter<'_> {
                 }
             };
             if let Some(mut ti) = clip {
-                ti.enabled = l.switches.video;
+                ti.enabled = comp.layer_effectively_visible(l.id);
                 ti.link = Some(link);
                 let mut t = fp::Track::new(fp::TrackId(self.fp.alloc_id()), fp::TrackKind::Video, format!("Video {}", video.len() + 1));
                 t.items.push(ti);
@@ -490,7 +490,7 @@ impl Exporter<'_> {
                 && !matches!(pl, Plan::Skip(_))
                 && let Some(mut ti) = self.track_item(item, &l.name, fp::TrackKind::Audio, &tm, rate)
             {
-                ti.enabled = l.switches.audio;
+                ti.enabled = comp.layer_effectively_audio(l.id);
                 ti.link = has_video_clip.then_some(link);
                 self.levels(&mut ti, l, &tm);
                 let mut t = fp::Track::new(fp::TrackId(self.fp.alloc_id()), fp::TrackKind::Audio, format!("Audio {}", audio.len() + 1));

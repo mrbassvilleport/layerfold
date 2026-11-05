@@ -1353,7 +1353,7 @@ fn project_files_keep_their_format_warn_about_newer_versions_and_never_save_unre
     let junk = tmp("Junk.ecproj");
     std::fs::write(&junk, "{ not json").unwrap();
     let e = s.execute("file.open", json!({"path": junk})).unwrap_err().to_string();
-    assert!(e.contains("is not a project EffectCraft can open"), "{e}");
+    assert!(e.contains("is not a project Layerfold can open"), "{e}");
 }
 
 #[test]
@@ -1437,6 +1437,41 @@ fn dragging_a_key_past_another_keeps_it() {
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(key_times(&s, a), vec![1.0, 2.0]);
+}
+
+/// A folder locked under a key drag's merge key ends the drag: the next step doesn't restore the
+/// drag's start (with the folder unlocked) nor move the now-locked keys.
+#[test]
+fn locking_a_folder_mid_drag_ends_the_key_drag() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    opacity_keys(&mut s, a, &[1.0, 2.0]);
+    let group = s.execute("layer.group", json!({"layers": [a]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("keys.select", json!({"keys": [{"layer": a, "path": "transform/opacity", "time": 1.0}]})).unwrap();
+    s.execute("keys.move", json!({"delta": 0.5, "merge": "m"})).unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true, "merge": "m"})).unwrap();
+    let _ = s.execute("keys.move", json!({"delta": 0.1, "merge": "m"}));
+    let _ = s.execute("keys.transform", json!({"timeOffset": 0.2, "fromStart": true, "merge": "m"}));
+    let _ = s.execute("keys.quickOffset", json!({"delta": 0.2, "merge": "m"}));
+    let c = s.active_comp().unwrap();
+    assert!(c.layer_effectively_locked(effectcraft_project::LayerId(a)), "the folder stays locked");
+    assert_eq!(key_times(&s, a), vec![1.5, 2.0]);
+}
+
+/// Like key drags, a layer-bar Quick Offset drag ends when its folder is locked under its merge key.
+#[test]
+fn locking_a_folder_mid_drag_ends_the_layer_quick_offset() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let b = solid(&mut s, "#00ff00");
+    let group = s.execute("layer.group", json!({"layers": [a]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.quickOffset", json!({"layers": [a, b], "delta": 1.0, "merge": "m", "fromStart": true})).unwrap();
+    let start = layer(&s, a).start_time;
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true, "merge": "m"})).unwrap();
+    let _ = s.execute("layer.quickOffset", json!({"layers": [a, b], "delta": 2.0, "merge": "m", "fromStart": true}));
+    let c = s.active_comp().unwrap();
+    assert!(c.layer_effectively_locked(effectcraft_project::LayerId(a)), "the folder stays locked");
+    assert_eq!(layer(&s, a).start_time, start);
 }
 
 #[test]

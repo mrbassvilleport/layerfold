@@ -35,7 +35,7 @@ The release `.wasm` is about 58 MB before `wasm-opt` (v0.3.1; code: the effects,
 expression engine and the UI; data, mostly the bundled fonts; function names for readable
 panics). Served compressed it is about 17 MB with gzip or 10 MB with Brotli, and the service
 worker caches it after the first visit. Its name doesn't change between releases, so hosts
-revalidate it rather than caching it for long (`packaging/web/README.md`).
+revalidate it rather than caching it for long (upstream's `packaging/web/README.md`).
 
 On other targets the web crate holds only its portable storage model (`store.rs`, unit-tested by
 `cargo test --workspace`); `cargo xtask wasm` (part of `cargo xtask ci`) checks the whole crate,

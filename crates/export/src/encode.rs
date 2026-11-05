@@ -519,17 +519,23 @@ mod tests {
         (y, u, v)
     }
 
+    /// Rounding half up for `v >= 0`, exact because `v + 0.5` is exact in `f64`. `f32::round` cannot
+    /// be the reference: on windows-gnu it rounds 0.49999997 up to 1.
+    fn exact_round(v: f32) -> f32 {
+        (f64::from(v) + 0.5) as u32 as f32
+    }
+
     #[test]
     fn round_pos_is_round() {
         for i in 0..2_000_000u32 {
             let v = i as f32 * 0.000_25;
-            assert_eq!(round_pos(v).to_bits(), v.round().to_bits(), "{v}");
+            assert_eq!(round_pos(v).to_bits(), exact_round(v).to_bits(), "{v}");
             let n = f32::from_bits(v.to_bits().wrapping_sub(1)).max(0.0);
-            assert_eq!(round_pos(n).to_bits(), n.round().to_bits(), "{n}");
+            assert_eq!(round_pos(n).to_bits(), exact_round(n).to_bits(), "{n}");
         }
         for k in 0..1024u32 {
             for v in [k as f32 + 0.5, f32::from_bits((k as f32 + 0.5).to_bits() - 1), f32::from_bits((k as f32 + 0.5).to_bits() + 1)] {
-                assert_eq!(round_pos(v), v.round(), "{v}");
+                assert_eq!(round_pos(v), exact_round(v), "{v}");
             }
         }
         for (i, u) in UNIT8.iter().enumerate() {

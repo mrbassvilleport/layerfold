@@ -62,6 +62,7 @@ fn summary(s: &mut Session, _: &Value) -> Result<Value> {
         "items": items,
         "activeComp": s.state.active_comp.map(|c| c.0),
         "time": s.time().seconds(),
+        "activeLayer": s.active_layer().map(|id| id.0),
         "selectedLayers": s.state.selected_layers.iter().map(|l| l.0).collect::<Vec<_>>(),
         "undo": s.history.undo.iter().map(|u| u.0.clone()).collect::<Vec<_>>(),
     }))
@@ -86,6 +87,7 @@ fn comp_info(s: &mut Session, p: &Value) -> Result<Value> {
         "workArea": [c.work_area.0.seconds(), c.work_area.1.seconds()], "background": c.background,
         "preserveFrameRate": c.preserve_frame_rate, "preserveResolution": c.preserve_resolution,
         "resolution": c.resolution.label(), "resolutionFactor": c.resolution.factor(),
+        "layerGroups": c.layer_groups,
         "layers": c.layers.iter().enumerate().map(|(i, l)| layer_json(l, i + 1)).collect::<Vec<_>>(),
     }))
 }

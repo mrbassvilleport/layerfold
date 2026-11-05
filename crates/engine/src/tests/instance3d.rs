@@ -74,7 +74,11 @@ const TRIANGLE: &str = r#"{
 }"#;
 
 fn triangle_model(s: &mut Session) -> u64 {
-    let dir = std::env::temp_dir().join(format!("ec-instance3d-{}", std::process::id()));
+    // One file per call: tests run in parallel and `DiskModels` rereads it on every render, so
+    // another test rewriting a shared file could blank this one's frame.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("ec-instance3d-{}-{call}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Triangle.gltf");
     std::fs::write(&path, TRIANGLE).unwrap();

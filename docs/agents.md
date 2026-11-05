@@ -1,5 +1,8 @@
 # Driving EffectCraft from agents
 
+In this repository the programs build into `editor/target/release/` with the project-local Rust
+wrapper, `editor/scripts/cargo.ps1 --upstream`.
+
 Everything in EffectCraft is an engine command with a stable id and JSON params. Menus, shortcuts,
 panel gestures, the CLI, the control channel and MCP all go through the same commands, so anything a
 user can do, an agent can do too. There are three ways in:
@@ -54,19 +57,13 @@ retrying. A later call reconnects; timeouts and malformed replies are never auto
 
 ### From an installed release
 
-The release packages ship `effectcraft-cli` alongside the desktop app, so no build is needed:
-
-| Install | CLI |
-|---|---|
-| Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\EffectCraft\effectcraft-cli.exe` by default (`C:\Program Files\ArtCraft\EffectCraft\effectcraft-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
-| Linux (deb, rpm) | `/usr/bin/effectcraft-cli` |
-| macOS | the separate `effectcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
+The Windows MSI installs `effectcraft-cli` beside the desktop app, by default as
+`C:\Program Files\Layerfold\effectcraft-cli.exe`, and adds that folder to `PATH`. Layerfold has no
+Linux or macOS packages: there, build the CLI from source.
 
 ```sh
 # Windows (PowerShell), default install folder
-claude mcp add effectcraft -- "$env:LOCALAPPDATA\Programs\ArtCraft\EffectCraft\effectcraft-cli.exe" mcp
-# Linux, or macOS with the CLI unzipped onto PATH
-claude mcp add effectcraft -- effectcraft-cli mcp
+claude mcp add effectcraft -- "C:\Program Files\Layerfold\effectcraft-cli.exe" mcp
 ```
 
 The server speaks JSON-RPC 2.0 over stdio, one message per line, and supports MCP protocol versions

@@ -105,7 +105,10 @@ impl Dependencies<'_> {
         if ctx.comp.renderer == effectcraft_project::Renderer::Advanced3D
             && !ctx.comp.draft_3d
             && ctx.comp.layers.iter().any(|l| {
-                l.is_light() && l.switches.video && l.is_active_at(ctx.time) && matches!(l.source, LayerSource::Light { kind: LightKind::Environment })
+                l.is_light()
+                    && ctx.comp.layer_effectively_visible(l.id)
+                    && l.is_active_at(ctx.time)
+                    && matches!(l.source, LayerSource::Light { kind: LightKind::Environment })
             })
         {
             return None;

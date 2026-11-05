@@ -430,7 +430,7 @@ fn cti_snaps_to_the_nearest_candidate() {
     assert_eq!(snap_time(&[1.0, 1.1], 1.06, 0.1), 1.1);
     let app = app();
     let comp = app.session.active_comp().unwrap().clone();
-    let c = snap_candidates(&comp, &build_rows(&app, &comp));
+    let c = snap_candidates(&comp, &SnapView { span: (0.0, comp.duration.seconds()), ..Default::default() }, true);
     assert!(c.contains(&comp.duration.seconds()) && c.contains(&0.0));
 }
 
@@ -459,11 +459,12 @@ fn drawn_text(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<String> {
 fn the_layer_context_menu_draws_in_the_interface_language() {
     let caps = LayerMenuCaps { vector: true, text: false, source: true };
     let (mut auto, mut actions) = (crate::automation::Registry::default(), Vec::new());
+    let comp = Comp::new(64, 64, Default::default(), Tick::ZERO);
     crate::i18n::set_current("zh-hans");
-    let menu = drawn_text(|ui| layer_menu(ui, &[7], caps, (&mut auto, "t"), &mut actions));
+    let menu = drawn_text(|ui| layer_menu(ui, &comp, &[7], caps, (&mut auto, "t"), &mut actions));
     let effects = drawn_text(|ui| effects_submenu(ui, &[7], &mut |_: &mut egui::Ui, _: &str, _: &str, _: serde_json::Value| {}));
     crate::i18n::set_current("en");
-    let english = drawn_text(|ui| layer_menu(ui, &[7], caps, (&mut auto, "t"), &mut actions));
+    let english = drawn_text(|ui| layer_menu(ui, &comp, &[7], caps, (&mut auto, "t"), &mut actions));
     for label in ["新建", "图层设置...", "在项目中显示图层源", "从矢量图层创建形状", "预合成...", "重复", "拆分图层", "删除"]
     {
         assert!(menu.iter().any(|t| t == label), "{label} missing from {menu:?}");
@@ -629,12 +630,79 @@ fn a_key_menu_edit_selects_the_clicked_key_before_applying_the_command() {
 }
 
 #[test]
-fn layer_drop_target_skips_moving_layers_beyond_the_viewport() {
-    let mut rows: Vec<Row> = (1..=6).map(|id| Row { layer: LayerId(id), depth: 0, kind: RowKind::Layer }).collect();
-    rows.insert(4, Row { layer: LayerId(4), depth: 1, kind: RowKind::Prop { uid: 0 } });
-    let visible: Vec<_> = (2..=4).map(|id| (Rect::NOTHING, LayerId(id))).collect();
-    for at in [Some(2), None] {
-        assert_eq!(layer_drop_target(&rows, &visible, at, &[1, 4, 5]), Some(LayerId(6)), "skip moving headers and their properties across the viewport edge");
-        assert_eq!(layer_drop_target(&rows, &visible, at, &[1, 4, 5, 6]), None, "the stack ends when no stationary layer follows");
+fn group_paths_reuse_only_the_same_composition_snapshot() {
+    use std::sync::Arc;
+    let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+    app.session.execute("comp.new", json!({"name":"Cache","width":64,"height":36,"duration":6})).unwrap();
+    for name in ["X", "B", "A"] {
+        app.session.execute("layer.newSolid", json!({"name":name,"color":"#406080"})).unwrap();
     }
+    let ids: Vec<_> = app.session.active_comp().unwrap().layers.iter().map(|l| l.id).collect();
+    let read = |app: &EffectcraftApp| {
+        let comp = app.session.active_comp_arc().unwrap();
+        let paths = group_paths(app, &comp);
+        for l in &comp.layers {
+            assert_eq!(paths.path(&comp, l.id).map(|g| g.id).collect::<Vec<_>>(), comp.layer_group_path(l.id).iter().map(|g| g.id).collect::<Vec<_>>());
+        }
+        paths
+    };
+    let initial = read(&app);
+    assert!(Arc::ptr_eq(&initial, &read(&app)));
+    let group = app.session.execute("layer.group", json!({"layers":[ids[0].0,ids[1].0]})).unwrap()["group"].as_u64().unwrap();
+    let grouped = read(&app);
+    assert!(!Arc::ptr_eq(&initial, &grouped));
+    assert!(Arc::ptr_eq(&grouped, &read(&app)));
+    app.session.execute("layer.groupUpdate", json!({"group":group,"collapsed":true})).unwrap();
+    let collapsed = read(&app);
+    assert!(!Arc::ptr_eq(&grouped, &collapsed));
+    let mut detached = app.session.active_comp().unwrap().clone();
+    detached.layer_groups.clear();
+    assert!(group_paths(&app, &detached).path(&detached, ids[0]).next().is_none());
+    assert!(Arc::ptr_eq(&collapsed, &read(&app)));
+    app.session.execute("layer.drop", json!({"layers":[ids[2].0],"into":group})).unwrap();
+    let moved = read(&app);
+    assert!(!Arc::ptr_eq(&collapsed, &moved));
+    app.session.execute("edit.undo", json!({})).unwrap();
+    let undone = read(&app);
+    assert!(!Arc::ptr_eq(&moved, &undone));
+    app.session.execute("edit.redo", json!({})).unwrap();
+    let redone = read(&app);
+    assert!(!Arc::ptr_eq(&undone, &redone));
+    // Direct model edits through copy-on-write must also invalidate the weak snapshot.
+    let cid = app.session.active_comp_id().unwrap();
+    Arc::make_mut(&mut app.session.project).comp_mut(cid).unwrap().layer_groups.clear();
+    assert!(!Arc::ptr_eq(&redone, &read(&app)));
+}
+
+/// A layer in a locked folder is locked, so it is no Alt-drag target (the command refuses it).
+#[test]
+fn replace_source_skips_a_layer_in_a_locked_folder() {
+    let mut app = app();
+    let cid = app.session.active_comp_id().unwrap();
+    let plate = app.session.active_comp().unwrap().layers.iter().find(|l| l.name == "Plate").unwrap().id;
+    let solid = app.session.project.items.values().find(|i| matches!(i.kind, ItemKind::Solid(_))).unwrap().id;
+    let target = |app: &EffectcraftApp| replace_source_target(app, cid, solid, plate, &app.session.active_comp().unwrap().clone());
+    assert!(target(&app));
+    let group = app.session.execute("layer.group", json!({"layers": [plate.0]})).unwrap()["group"].as_u64().unwrap();
+    assert!(target(&app));
+    app.session.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    assert!(!target(&app), "a locked folder locks its layers");
+}
+
+#[test]
+fn stack_drop_at_last_visible_row_keeps_the_hidden_insertion_boundary() {
+    let mut s = effectcraft_engine::Session::default();
+    s.execute("comp.new", json!({"width":64,"height":64,"duration":6})).unwrap();
+    for name in ["E", "D", "C", "B", "A"] {
+        s.execute("layer.newSolid", json!({"name":name})).unwrap();
+    }
+    let ids: Vec<_> = s.active_comp().unwrap().layers.iter().map(|l| l.id).collect();
+    let visible = vec![(Rect::from_min_size(pos2(0., 0.), vec2(300., 19.)), Row { layer: ids[1], depth: 0, kind: RowKind::Layer })];
+    let drop = stack_drop(s.active_comp().unwrap(), &visible, pos2(200., 18.), 100., 0.);
+    assert_eq!(drop.above, Some(ids[2]));
+    let group = s.execute("layer.group", json!({"layers":[ids[0].0,ids[1].0,ids[2].0]})).unwrap()["group"].as_u64().unwrap();
+    let drop = stack_drop(s.active_comp().unwrap(), &visible, pos2(200., 18.), 100., 0.);
+    assert_eq!((drop.into, drop.above), (Some(group), Some(ids[2])), "insert inside folder before hidden next child");
+    let drop = stack_drop(s.active_comp().unwrap(), &visible, pos2(50., 18.), 100., 0.);
+    assert_eq!((drop.into, drop.above), (None, Some(ids[3])), "outside boundary skips the whole folder");
 }

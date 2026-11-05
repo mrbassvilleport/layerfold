@@ -132,6 +132,16 @@ const WRITES: &[(&str, &[&str])] = &[
     ("file.createProxy", &["path", "output"]),
 ];
 
+#[cfg(test)]
+#[test]
+fn scripts_are_limited_on_every_command_that_writes_a_named_file() {
+    let script = |id: &str| effectcraft_engine::SCRIPT_WRITES.iter().find(|(c, _)| *c == id).map(|(_, p)| *p);
+    // A query that writes nothing, and a command with its own check.
+    for (id, params) in WRITES.iter().chain(MIXED_WRITES).filter(|(id, _)| !matches!(*id, "file.checkOutput" | "camera.exportBlender")) {
+        assert_eq!(script(id), Some(*params), "{id}");
+    }
+}
+
 /// Commands that write where they are not told: the project's file, the Render Queue's outputs.
 const IMPLICIT_WRITES: &[&str] = &["file.save", "file.incrementAndSave", "renderQueue.render", "render.preRender"];
 
@@ -379,6 +389,9 @@ impl FootageSource for ConfinedFootage {
     }
     fn cancellable(&self, cancel: &Arc<AtomicBool>, f: &mut dyn FnMut()) {
         self.inner.cancellable(cancel, f)
+    }
+    fn background(&self, f: &mut dyn FnMut()) {
+        self.inner.background(f)
     }
     fn called_off(&self) -> bool {
         self.inner.called_off()

@@ -50,6 +50,66 @@ fn solid_fills_comp() {
 }
 
 #[test]
+fn nested_layer_group_video_gates_pixels_solo_and_cache_without_changing_children() {
+    let (mut p, cid, comp) = setup();
+    let mut top = solid(&mut p, &comp, [1.0, 0.0, 0.0], 200, 100);
+    top.switches.solo = true;
+    let bottom = solid(&mut p, &comp, [0.0, 0.0, 1.0], 200, 100);
+    let id = top.id;
+    let c = p.comp_mut(cid).unwrap();
+    c.layers = vec![top, bottom].into();
+    c.layer_groups = vec![
+        effectcraft_project::LayerGroup { id: 5000, name: "Outer".into(), members: vec![id], ..Default::default() },
+        effectcraft_project::LayerGroup { id: 5001, name: "Inner".into(), parent: Some(5000), members: vec![id], ..Default::default() },
+    ];
+    let original = c.layers.clone();
+    let key = crate::disk_cache::comp_content_key(&p, cid);
+    let on = render_frame(&p, cid, Tick::ZERO, 1.0);
+    assert_eq!(on.get(100, 50), [1.0, 0.0, 0.0, 1.0]);
+    p.comp_mut(cid).unwrap().layer_groups[0].video = false;
+    assert_ne!(key, crate::disk_cache::comp_content_key(&p, cid));
+    let off = render_frame(&p, cid, Tick::ZERO, 1.0);
+    // Like a soloed layer with its own Video off: not drawn, and its Solo still hides the rest.
+    assert_eq!(off.get(100, 50), [0.0; 4]);
+    assert_eq!(p.comp(cid).unwrap().layers, original);
+    p.comp_mut(cid).unwrap().layer_groups[0].video = true;
+    assert_eq!(key, crate::disk_cache::comp_content_key(&p, cid));
+    assert_eq!(render_frame(&p, cid, Tick::ZERO, 1.0).data, on.data);
+
+    // The release's time-independent Solo holds under either hidden nested folder too.
+    p.comp_mut(cid).unwrap().layer_mut(id).unwrap().in_point = Tick::from_seconds_f64(1.0);
+    assert_eq!(render_frame(&p, cid, Tick::ZERO, 1.0).get(100, 50), [0.0; 4]);
+    assert_eq!(render_frame(&p, cid, Tick::from_seconds_f64(1.5), 1.0).data, on.data);
+    for group in 0..2 {
+        p.comp_mut(cid).unwrap().layer_groups[group].video = false;
+        assert_eq!(render_frame(&p, cid, Tick::from_seconds_f64(1.5), 1.0).get(100, 50), [0.0; 4]);
+        p.comp_mut(cid).unwrap().layer_groups[group].video = true;
+    }
+}
+
+/// A track matte in a hidden folder still mattes, like a matte with its own Video off (After
+/// Effects): a folder's Video only takes its layers off screen.
+#[test]
+fn a_matte_in_a_hidden_folder_still_mattes() {
+    for (kind, alpha) in [(MatteKind::Alpha, 0.0), (MatteKind::AlphaInverted, 1.0)] {
+        let (mut p, cid, comp) = setup();
+        let mut matte = solid(&mut p, &comp, [1.0; 3], 200, 100);
+        matte.switches.video = false;
+        let mut fill = solid(&mut p, &comp, [1.0, 0.0, 0.0], 200, 100);
+        fill.track_matte = Some(TrackMatte { layer: matte.id, kind });
+        let id = matte.id;
+        let c = p.comp_mut(cid).unwrap();
+        c.layers = vec![matte, fill].into();
+        c.layer_groups = vec![effectcraft_project::LayerGroup { id: 5000, name: "Matte".into(), members: vec![id], ..Default::default() }];
+        let enabled_key = crate::disk_cache::comp_content_key(&p, cid);
+        assert_eq!(render_frame(&p, cid, Tick::ZERO, 1.0).get(100, 50)[3], 1.0 - alpha);
+        p.comp_mut(cid).unwrap().layer_groups[0].video = false;
+        assert_ne!(enabled_key, crate::disk_cache::comp_content_key(&p, cid));
+        assert_eq!(render_frame(&p, cid, Tick::ZERO, 1.0).get(100, 50)[3], 1.0 - alpha);
+    }
+}
+
+#[test]
 fn position_keyframes_move_layer() {
     let (mut p, cid, comp) = setup();
     let mut l = solid(&mut p, &comp, [0.0, 1.0, 0.0], 20, 20);

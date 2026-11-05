@@ -740,7 +740,8 @@ impl Edited {
 
 fn edited(app: &EffectcraftApp, ectx: &EvalCtx, lid: LayerId) -> Option<Edited> {
     let layer = ectx.comp.layer(lid)?.clone();
-    if !matches!(layer.source, LayerSource::Text) {
+    // A folder locked (or hidden) during editing ends the overlay, like for other viewer controls.
+    if !matches!(layer.source, LayerSource::Text) || !super::viewer::viewer_editable(ectx.comp, &layer) {
         return None;
     }
     let doc = layer_doc(&app.session, lid)?;

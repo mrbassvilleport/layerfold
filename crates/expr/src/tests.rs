@@ -1672,3 +1672,18 @@ fn an_expression_cant_change_the_prelude_for_the_next() {
 }
 
 mod property_group;
+
+/// A layer in a hidden folder is not `active`, though its own `enabled` switch stays on.
+#[test]
+fn a_hidden_folder_makes_its_layers_inactive() {
+    let mut f = fx();
+    let b = f.b;
+    f.p.comp_mut(f.cid).unwrap().layer_groups =
+        vec![effectcraft_project::LayerGroup { id: 9000, name: "Hidden".into(), members: vec![b], video: false, ..Default::default() }];
+    assert_eq!(f.num(r#"thisComp.layer("B").enabled ? 1 : 0"#, 1.0), 1.0);
+    assert_eq!(f.num(r#"thisComp.layer("B").active ? 1 : 0"#, 1.0), 0.0);
+    assert_eq!(f.num(r#"thisComp.layer("A").active ? 1 : 0"#, 1.0), 1.0);
+    // Like the layer's own Video switch, a hidden folder turns `hasVideo` off.
+    assert_eq!(f.num(r#"thisComp.layer("B").hasVideo ? 1 : 0"#, 1.0), 0.0);
+    assert_eq!(f.num(r#"thisComp.layer("A").hasVideo ? 1 : 0"#, 1.0), 1.0);
+}

@@ -81,6 +81,28 @@ impl EffectcraftApp {
         }
     }
 
+    pub(crate) fn refresh_audio(&mut self) {
+        if !self.playback.playing || self.playback.caching {
+            return;
+        }
+        if self.audio.is_some() {
+            let src = self.render_source();
+            if let Some(audio) = &mut self.audio {
+                audio.update_source(src);
+            }
+        } else if self.audio_plays()
+            && let Some(plan) = self.playback.plan
+        {
+            if plan.video {
+                // The initially silent preview gains sound once its video is ready.
+                self.playback.audio_held = true;
+            } else if let Some(c) = self.session.active_comp() {
+                let t = c.frame_rate.tick_of(self.playback.audio_frame.unwrap_or(plan.first));
+                self.start_audio(t);
+            }
+        }
+    }
+
     /// Audio scrubbing: play the frame of `comp` at `t` (see [`audio::AudioScrub`]), opening the
     /// output on first use. Silent comps and missing devices do nothing.
     pub fn scrub_audio(&mut self, comp: ItemId, t: Tick, now: f64) {

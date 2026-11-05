@@ -284,6 +284,9 @@ fn edit_vertices_counted(s: &mut Session, p: &Value, label: &str, removes: bool,
     s.edit(label, merge_p(p), |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         for ((l, m), idx) in &groups {
+            if comp.layer_effectively_locked(effectcraft_project::LayerId(*l)) {
+                continue;
+            }
             let Some(layer) = comp.layer_mut(effectcraft_project::LayerId(*l)) else { continue };
             let lt = layer.layer_time(t);
             let Some(g) = layer.props.find_group_mut(*m).filter(|g| is_path_group(g)) else { continue };

@@ -323,7 +323,7 @@ fn loader(id: &str) -> Option<Loader> {
 /// The notice kept next to installed weights: what they are, who made them, their licence.
 pub fn notice(m: &ModelInfo) -> String {
     format!(
-        "{}\n\nAuthors: {}\nLicence: {} (full text: https://spdx.org/licenses/{}.html; as stated by the authors: {})\nSource: {}\nSHA-256: {}\nProject: {}\n\nInstalled unmodified. EffectCraft runs it with its own implementation\nand is not affiliated with or endorsed by its authors.\n",
+        "{}\n\nAuthors: {}\nLicence: {} (full text: https://spdx.org/licenses/{}.html; as stated by the authors: {})\nSource: {}\nSHA-256: {}\nProject: {}\n\nInstalled unmodified. Layerfold runs it with its own implementation\nand is not affiliated with or endorsed by its authors.\n",
         m.name, m.authors, m.licence, m.licence, m.licence_url, m.source, m.sha256, m.homepage
     )
 }

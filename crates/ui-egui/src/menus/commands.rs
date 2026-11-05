@@ -43,6 +43,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("timeline.zoomFrameToggle", "Zoom In to Frame Level / Out to the Whole Comp", [], Some(";")),
     uic!("timeline.graphEditor", "Graph Editor", [], Some("Shift+F3")),
     uic!("timeline.switchesModes", "Toggle Switches / Modes", [], Some("F4")),
+    uic!("timeline.layerFrames", "Show Video Frames on Layers", [], None),
     uic!("timeline.workAreaBegin", "Set Work Area Begin", [], Some("B")),
     uic!("timeline.workAreaEnd", "Set Work Area End", [], Some("N")),
     uic!("timeline.moveInToTime", "Move Layer In Point to Current Time", [], Some("[")),

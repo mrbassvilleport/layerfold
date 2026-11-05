@@ -45,7 +45,11 @@ fn import_timeline(s: &mut Session, p: &Value) -> Result<Value> {
     let importer = s.importer.clone();
     let services = s.services.clone();
     let rate = s.sequence_rate();
+    let document = path.clone();
     let mut probe = move |m: &str| -> Option<effectcraft_project::Footage> {
+        // A media path in the file may name another computer: looking for it would connect there.
+        let file = crate::doc_path::resolve(m, Some(&document)).ok()?;
+        let m = file.to_str()?;
         if !services.exists(m) {
             return None;
         }
@@ -56,6 +60,10 @@ fn import_timeline(s: &mut Session, p: &Value) -> Result<Value> {
         st.project_selection = r.comps.clone();
         Ok(r)
     })?;
+    // Placeholders keep the path from the file: later checks follow it only if it is allowed.
+    for m in &res.missing {
+        s.stored_paths.add_path(m, Some(&path));
+    }
     if let Some(c) = res.comps.first() {
         s.open_comp(*c);
     }
@@ -86,6 +94,10 @@ fn safe(s: &str) -> String {
 fn isolate(project: &Project, cid: ItemId, lid: LayerId) -> Option<Project> {
     let mut q = project.clone();
     let c = q.comp_mut(cid)?;
+    // Like its own Video switch, the layer's folder Video doesn't hide it in its own pre-render.
+    for g in &mut c.layer_groups {
+        g.members.retain(|m| *m != lid);
+    }
     for l in &mut c.layers {
         if l.id == lid {
             l.switches.solo = false;
@@ -302,4 +314,26 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("file.timelineFormats", "Timeline Interchange Formats", [], None, "{}", always, timeline_formats),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pre-rendered layer in a hidden folder renders like one with its own Video off: visible.
+    #[test]
+    fn a_pre_render_shows_its_layer_from_a_hidden_folder() {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": "Main", "width": 32, "height": 32, "duration": 1})).unwrap();
+        s.execute("layer.newSolid", json!({"name": "A", "color": "#ff0000"})).unwrap();
+        let l = LayerId(s.execute("layer.newSolid", json!({"name": "B", "color": "#0000ff"})).unwrap()["layer"].as_u64().unwrap());
+        let a = s.active_comp().unwrap().layers[1].id;
+        let group = s.execute("layer.group", json!({"layers": [l.0, a.0]})).unwrap()["group"].as_u64().unwrap();
+        s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+        let cid = s.active_comp_id().unwrap();
+        let q = isolate(&s.project, cid, l).unwrap();
+        let c = q.comp(cid).unwrap();
+        assert!(c.layer_effectively_visible(l));
+        assert!(!c.layer_effectively_visible(a));
+    }
 }

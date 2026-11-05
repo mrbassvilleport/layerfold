@@ -32,4 +32,4 @@ Projects built with the command-line tool or an agent can use relative paths suc
 
 ## Still stuck?
 
-Ask in [Discord](https://discord.gg/artcraft) or open an issue in the [issue tracker](https://github.com/storytold/effectcraft/issues). Say which system you use, whether the project came from another computer or from the command-line tool, and where the footage is stored.
+Open an issue in the [issue tracker](https://github.com/mrbassvilleport/layerfold/issues). Say which system you use, whether the project came from another computer or from the command-line tool, and where the footage is stored.

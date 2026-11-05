@@ -231,18 +231,14 @@ mod tests {
         s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
         let mut o = Session::default();
         o.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
-        let mut paths: Vec<String> =
-            o.project.items.values().filter_map(|i| if let ItemKind::Footage(f) = &i.kind { Some(f.path.clone()) } else { None }).collect();
+        let mut paths: Vec<std::path::PathBuf> =
+            o.project.items.values().filter_map(|i| if let ItemKind::Footage(f) = &i.kind { Some(std::path::PathBuf::from(&f.path)) } else { None }).collect();
         paths.sort();
-        // `Path` equality compares components, so `/` and `\` spell the same file on Windows.
         let abs = crate::doc_path::resolve("/nonexistent/ec/abs.png", path.to_str()).unwrap();
         let gone = dir.join("media").join("ec-relative-gone.png");
-        let mut expected = [abs.to_str().unwrap(), clip.to_str().unwrap(), gone.to_str().unwrap()];
+        let mut expected = vec![abs, clip, gone];
         expected.sort();
-        assert_eq!(paths.len(), expected.len(), "{paths:?}");
-        for (got, want) in paths.iter().zip(expected) {
-            assert_eq!(std::path::Path::new(got), std::path::Path::new(want), "{paths:?}");
-        }
+        assert_eq!(paths, expected);
         assert!(!o.is_dirty(), "finding the files is no edit");
         let r = o.execute("footage.check", json!({"wait": true})).unwrap();
         assert_eq!(r["missing"], 2);
@@ -263,16 +259,16 @@ mod tests {
         o.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
         let r = o.execute("footage.check", json!({"wait": true})).unwrap();
         assert_eq!((r["relinked"].as_u64(), r["missing"].as_u64()), (Some(1), Some(1)), "{r}");
-        let paths: Vec<String> = o
+        let paths: Vec<std::path::PathBuf> = o
             .project
             .items
             .values()
             .filter_map(|i| match &i.kind {
-                ItemKind::Footage(f) => Some(f.path.clone()),
+                ItemKind::Footage(f) => Some(std::path::PathBuf::from(&f.path)),
                 _ => None,
             })
             .collect();
-        assert!(paths.contains(&d.join("Job").join("shots").join("a.png").to_string_lossy().to_string()), "{paths:?}");
+        assert!(paths.contains(&d.join("Job/shots/a.png")), "{paths:?}");
         assert!(!o.is_dirty(), "finding the files is not an edit");
         let _ = std::fs::remove_dir_all(d);
     }

@@ -97,13 +97,21 @@ fn repair_comp(name: &str, c: &Comp, notes: &mut Vec<String>) -> Option<Comp> {
     let duration = c.duration.max(rate.frame_duration());
     let samples = c.motion_blur_samples.clamp(MOTION_BLUR_SAMPLES.0, MOTION_BLUR_SAMPLES.1);
     let adaptive = c.motion_blur_adaptive_limit.clamp(ADAPTIVE_SAMPLE_LIMIT.0, ADAPTIVE_SAMPLE_LIMIT.1);
-    let unchanged = (width, height, rate, duration, samples, adaptive)
-        == (c.width, c.height, c.frame_rate, c.duration, c.motion_blur_samples, c.motion_blur_adaptive_limit)
+    let groups_changed = !c.layer_groups_are_valid();
+    if groups_changed {
+        notes.push(format!("{name}: repaired layer groups"));
+    }
+    let unchanged = !groups_changed
+        && (width, height, rate, duration, samples, adaptive)
+            == (c.width, c.height, c.frame_rate, c.duration, c.motion_blur_samples, c.motion_blur_adaptive_limit)
         && pa.to_bits() == c.pixel_aspect.to_bits();
     if unchanged {
         return None;
     }
     let mut n = c.clone();
+    if groups_changed {
+        n.normalize_layer_groups();
+    }
     if (width, height) != (c.width, c.height) {
         note(notes, name, "size", format_args!("{} × {} px", c.width, c.height), format_args!("{width} × {height} px"));
     }

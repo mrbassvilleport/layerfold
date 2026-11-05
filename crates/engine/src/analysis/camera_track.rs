@@ -409,10 +409,9 @@ impl Session {
                     Err(e) => (String::new(), String::new(), 0.0, format!("3D Camera Tracker: {e}"), true),
                 };
                 let r = self.edit(if st.solve_only { "3D Camera Tracker Solve" } else { "3D Camera Tracker Analysis" }, None, |p, _| {
-                    let g = p
-                        .comp_mut(cid)
-                        .and_then(|c| c.layer_mut(lid))
-                        .and_then(|l| l.props.find_group_mut(uid))
+                    let g = crate::commands::layer_mut(p, cid, lid)?
+                        .props
+                        .find_group_mut(uid)
                         .ok_or_else(|| crate::EngineError::Other("the 3D Camera Tracker was removed during analysis".into()))?;
                     let mut set = |m: &str, v: Value| {
                         if let Some(pr) = g.prop_mut(m) {
@@ -452,8 +451,14 @@ impl Session {
     pub fn poll_camera(&mut self, auto: bool) -> bool {
         let changed = self.poll_camera_job();
         if auto && self.camera_job.is_none() && self.offloaded(JobKind::Camera).is_none() {
-            while let Some((c, l, e)) = self.camera_pending.first().copied() {
-                self.camera_pending.remove(0);
+            let mut i = 0;
+            while let Some((c, l, e)) = self.camera_pending.get(i).copied() {
+                // A layer in a locked folder stays queued until the folder is unlocked.
+                if self.project.comp(c).is_some_and(|cm| crate::commands::locked_by_group(cm, l)) {
+                    i += 1;
+                    continue;
+                }
+                self.camera_pending.remove(i);
                 if self.start_camera(c, l, e, false).is_ok() {
                     return true;
                 }

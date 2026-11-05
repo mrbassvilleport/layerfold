@@ -55,7 +55,7 @@ def _media_path():
 
 def import_scene():
     if bpy.app.version < (4, 0, 0):
-        raise RuntimeError("EffectCraft scene import requires Blender 4.0 or newer")
+        raise RuntimeError("Layerfold scene import requires Blender 4.0 or newer")
     scene = bpy.data.scenes.new(DATA["name"])
     scene.frame_start = DATA["startFrame"]
     scene.frame_end = DATA["endFrame"]
@@ -74,7 +74,7 @@ def import_scene():
     scene["effectcraft_scale_is_arbitrary"] = True
     scene["effectcraft_shutter_phase_degrees"] = DATA["shutterPhase"]
 
-    collection = bpy.data.collections.new("EffectCraft Tracking")
+    collection = bpy.data.collections.new("Layerfold Tracking")
     scene.collection.children.link(collection)
     camera_data = bpy.data.cameras.new("3D Tracker Camera")
     camera = bpy.data.objects.new("3D Tracker Camera", camera_data)
@@ -178,7 +178,7 @@ def import_scene():
 
     _interpolation(camera)
     _interpolation(camera_data)
-    metadata = bpy.data.texts.new("EffectCraft Tracking Metadata.json")
+    metadata = bpy.data.texts.new("Layerfold Tracking Metadata.json")
     metadata.write(json.dumps(DATA, ensure_ascii=False, indent=2))
     scene["effectcraft_metadata_text"] = metadata.name
     camera_data["effectcraft_average_error_pixels"] = DATA["solve"]["averageError"]
@@ -195,8 +195,8 @@ def import_scene():
                 area.spaces.active.region_3d.view_perspective = 'CAMERA'
     scene.frame_set(scene.frame_start)
     for warning in DATA["warnings"]:
-        print("EffectCraft: " + warning)
-    print("EffectCraft: imported", len(DATA["frames"]), "baked camera frames into", scene.name)
+        print("Layerfold: " + warning)
+    print("Layerfold: imported", len(DATA["frames"]), "baked camera frames into", scene.name)
     return scene
 
 

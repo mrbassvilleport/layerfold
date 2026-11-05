@@ -728,7 +728,7 @@ fn lights(ctx: &EvalCtx, lin: bool) -> (Vec<Light>, [f32; 3], Option<EnvLight>) 
     let mut ambient = [0.0f32; 3];
     let mut env = None;
     let l = |v: f32| if lin { v } else { srgb_to_linear(v) };
-    for layer in ctx.comp.layers.iter().filter(|l| l.is_light() && l.switches.video && l.is_active_at(ctx.time)) {
+    for layer in ctx.comp.layers.iter().filter(|l| l.is_light() && l.switches.video && ctx.comp.layer_group_video_enabled(l.id) && l.is_active_at(ctx.time)) {
         let LayerSource::Light { kind } = layer.source else { continue };
         let Some(g) = layer.props.sub("lightOptions") else { continue };
         let k = (ctx.f(layer, g, "intensity", 100.0) / 100.0) as f32;
@@ -952,6 +952,7 @@ enum EnvPixels {
 fn env_pixels(r: &Renderer, ctx: &EvalCtx, src: Option<u64>, lin: bool) -> EnvPixels {
     let layer = match src {
         Some(id) => ctx.comp.layer(effectcraft_project::LayerId(id)),
+        // Like its own Video switch, a folder's Video doesn't stop a layer lighting as the source.
         None => ctx.comp.layers.iter().find(|l| l.environment && l.is_active_at(ctx.time)),
     };
     let Some(layer) = layer else {
@@ -1020,6 +1021,8 @@ fn ssaa_for(r: &Renderer, out: (u32, u32)) -> u32 {
 /// Add one layer of a run: a model or primitive mesh, an extruded text/shape layer, the nested
 /// layers of a collapsed precomp, or a textured card.
 fn emit_layer<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &Layer, b: &mut Builder) {
+    // Folder Video is applied where runs are listed (like the layer's own Video), not here: a 3D
+    // track matte from a hidden folder is drawn through this too.
     if layer.environment || layer.switches.adjustment || ctx.opacity(layer) <= 0.0 || !layer.has_video() {
         return;
     }
@@ -1053,6 +1056,7 @@ fn collapsed_layer<'a>(r: &Renderer<'a>, ctx: &EvalCtx<'a>, layer: &Layer, colla
             || matches!(l.source, LayerSource::Camera)
             || (any_solo && !l.switches.solo)
             || (!sub.opts.guides && l.switches.guide)
+            || !nctx.comp.layer_group_video_enabled(l.id)
         {
             continue;
         }

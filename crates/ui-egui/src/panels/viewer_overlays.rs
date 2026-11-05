@@ -121,6 +121,9 @@ pub(crate) fn open_end_at(paths: &[PathInfo], map: &ViewerMap, pos: Pos2, tol: f
 /// A mask or shape path of a layer by group uid, evaluated at the context time.
 pub(crate) fn path_of(ectx: &EvalCtx, layer: LayerId, uid: u64) -> Option<PathInfo> {
     let l = ectx.comp.layer(layer)?;
+    if !super::viewer::viewer_editable(ectx.comp, l) {
+        return None;
+    }
     let g = l.props.find_group(uid)?;
     let sp = g.get("path").map(|pr| ectx.value(l, pr)).and_then(|v| v.as_path().cloned())?;
     let (m, _) = super::viewer::l2c(ectx, l);

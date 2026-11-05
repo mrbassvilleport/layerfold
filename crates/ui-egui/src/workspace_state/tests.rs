@@ -12,6 +12,26 @@ fn tabs(panels: &[PanelKind]) -> Node<PanelKind> {
     Node::Tabs { panels: panels.to_vec(), active: 0 }
 }
 
+/// The Timeline's frames button is saved as soon as it changes and comes back at the next start;
+/// a file from before it existed means on.
+#[test]
+fn the_frames_button_survives_a_restart() {
+    let config = MemoryConfig::default();
+    let mut ui = UiState::default();
+    let mut store = WorkspaceStore::load(Some(&config), &mut ui);
+    assert!(ui.timeline.layer_frames && !store.has_changes(&ui));
+    ui.timeline.layer_frames = false;
+    assert!(store.has_changes(&ui));
+    assert!(store.save(Some(&config), &ui).unwrap());
+    let mut next = UiState::default();
+    WorkspaceStore::load(Some(&config), &mut next);
+    assert!(!next.timeline.layer_frames);
+
+    let mut older = serde_json::to_value(Snapshot::capture(&UiState::default())).unwrap();
+    older.as_object_mut().unwrap().remove("layer_frames");
+    assert!(serde_json::from_value::<Snapshot>(older).unwrap().layer_frames);
+}
+
 #[test]
 fn corrupt_future_or_unknown_workspace_keeps_defaults_and_original_file() {
     let valid = Snapshot::capture(&UiState::default());

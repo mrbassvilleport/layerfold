@@ -95,7 +95,7 @@ The most important missing piece: it turns every other estimate here into a meas
   feature id in `plan/aftereffects/feature-catalog.md`: keyframe interpolation of every kind,
   blend modes, track mattes, each effect at default and at non-default settings, text animators,
   expressions, 3D, motion blur, time remapping.
-- Drive After Effects through ExtendScript (see CLAUDE.md) to record property values at sampled
+- Drive After Effects through ExtendScript to record property values at sampled
   times and render reference frames; render the same projects in EffectCraft headless.
 - Compare values exactly and frames with a perceptual metric; publish a per-feature fidelity
   score and a fidelity column in target-app-parity.md.

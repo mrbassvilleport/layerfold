@@ -434,6 +434,508 @@ fn shot_frame(f: u32) -> Image {
     img
 }
 
+/// Commands that add layers next to their source or change it refuse a source in a locked
+/// folder, as `edit.split` does: no change and no undo step.
+#[test]
+fn folder_lock_blocks_create_trace_and_scene_split() {
+    let (mut s, _, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let text = s.execute("layer.newText", json!({"text": "Hi", "size": 20})).unwrap()["layer"].as_u64().unwrap();
+    let solid = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 20, "height": 20})).unwrap()["layer"].as_u64().unwrap();
+    let group = s.execute("layer.group", json!({"layers": [clip.0, text, solid]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    for (command, params) in [
+        ("layer.create", json!({"op": "shapesFromText", "layers": [text]})),
+        ("layer.autoTrace", json!({"layer": solid})),
+        ("layer.sceneEditDetection", json!({"layer": clip.0, "mode": "split", "wait": true})),
+    ] {
+        let before = s.project.to_file_json().unwrap();
+        let undo = s.history.undo.len();
+        assert!(s.execute(command, params).is_err(), "{command}");
+        assert_eq!(s.project.to_file_json().unwrap(), before, "{command}");
+        assert_eq!(s.history.undo.len(), undo, "{command}");
+    }
+}
+
+#[test]
+fn folder_lock_blocks_analyses_mattes_inserts_and_deletes() {
+    let (mut s, cid, clip, item) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| LayerId(r["layer"].as_u64().unwrap());
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let cam = id(s.execute("layer.newCamera", json!({})).unwrap());
+    let text = id(s.execute("layer.newText", json!({"text": "Hi", "size": 20})).unwrap());
+    let outside = id(s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 20, "height": 20})).unwrap());
+    let order: Vec<LayerId> = s.project.comp(cid).unwrap().layers.iter().map(|l| l.id).collect();
+    assert_eq!(order, vec![outside, text, cam, clip]);
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    s.execute("track.new", json!({"kind": "transform"})).unwrap();
+    s.execute("effect.apply", json!({"effect": "Warp Stabilizer"})).unwrap();
+    s.execute("effect.apply", json!({"effect": "Roto Brush & Refine Edge"})).unwrap();
+    s.execute("layer.addMask", json!({"layer": clip.0})).unwrap();
+    s.execute("layer.setParent", json!({"layers": [text.0], "parent": outside.0})).unwrap();
+    // A Type-tool layer left empty, still being edited when its folder is locked.
+    s.execute("text.edit", json!({"layer": text.0, "created": true})).unwrap();
+    s.execute("text.setSelection", json!({"select": "all"})).unwrap();
+    s.execute("text.delete", json!({})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [text.0, cam.0, clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    let out = tmp("caf-locked");
+    for (command, params) in [
+        ("track.analyze", json!({"layer": clip.0, "wait": true})),
+        ("warp.analyze", json!({"layer": clip.0, "wait": true})),
+        ("track.mask", json!({"layer": clip.0, "wait": true})),
+        ("roto.propagate", json!({"layer": clip.0, "wait": true})),
+        ("roto.freeze", json!({"layer": clip.0, "wait": true})),
+        ("contentFill.generate", json!({"layer": clip.0, "wait": true, "outputDir": out.to_string_lossy()})),
+        ("camera.stereoRig", json!({})),
+        ("footage.rippleInsertEdit", json!({"item": item.0, "at": 0.5})),
+        ("layer.setTrackMatte", json!({"layer": outside.0, "matte": text.0})),
+        ("layer.trackMatte", json!({"layers": [outside.0], "op": "below"})),
+        ("edit.clear", json!({"layers": [outside.0]})),
+        ("project.delete", json!({"items": [item.0]})),
+    ] {
+        let before = s.project.to_file_json().unwrap();
+        let undo = s.history.undo.len();
+        let err = s.execute(command, params).expect_err(command).to_string();
+        assert!(err.to_lowercase().contains("lock"), "{command}: {err}");
+        assert_eq!(s.project.to_file_json().unwrap(), before, "{command}");
+        assert_eq!(s.history.undo.len(), undo, "{command}");
+    }
+    let undo = s.history.undo.len();
+    s.execute("text.endEdit", json!({})).unwrap();
+    assert!(s.project.comp(cid).unwrap().layer(text).is_some(), "the empty text layer stays in its locked folder");
+    assert_eq!(s.history.undo.len(), undo);
+}
+
+#[test]
+fn precompose_stays_inside_one_folder_level() {
+    let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| r["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let a = id(s.execute("layer.newSolid", json!({"color": "#ffffff"})).unwrap());
+    let b = id(s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap());
+    let outside = id(s.execute("layer.newSolid", json!({"color": "#00ff00"})).unwrap());
+    let group = s.execute("layer.group", json!({"layers": [b, a, clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false, "audio": false})).unwrap();
+    // Part inside the folder, part outside: refused.
+    let before = s.project.to_file_json().unwrap();
+    let err = s.execute("layer.precompose", json!({"layers": [outside, b], "name": "Mixed"})).unwrap_err().to_string();
+    assert!(err.contains("layer groups"), "{err}");
+    assert_eq!(s.project.to_file_json().unwrap(), before);
+    // All inside one folder: the precomp layer takes their place in it, still hidden.
+    let r = s.execute("layer.precompose", json!({"layers": [b, a], "name": "Pre"})).unwrap();
+    let pre = LayerId(r["layer"].as_u64().unwrap());
+    let outer = s.project.comp(cid).unwrap();
+    assert!(outer.layer_groups_are_valid());
+    assert_eq!(outer.layer_group(pre).map(|g| g.id), Some(group));
+    assert_eq!(outer.layer_group(pre).unwrap().members, vec![pre, clip]);
+    assert!(!outer.layer_effectively_visible(pre) && !outer.layer_effectively_audio(pre));
+    let inner = s.project.comp(ItemId(r["comp"].as_u64().unwrap())).unwrap();
+    assert!(inner.layer_groups.is_empty(), "no folder copies inside the precomp");
+    assert!(inner.layers.iter().all(|l| l.switches.video), "the layers' own switches are untouched");
+    // All outside folders: fine, and the precomp layer stays outside.
+    let r = s.execute("layer.precompose", json!({"layers": [outside], "name": "Out"})).unwrap();
+    let out = LayerId(r["layer"].as_u64().unwrap());
+    assert!(s.project.comp(cid).unwrap().layer_group(out).is_none());
+}
+
+#[test]
+fn folder_lock_protects_dependants_from_precompose_lift_and_clear() {
+    let (mut s, _, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| r["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let rig = id(s.execute("layer.newNull", json!({})).unwrap());
+    let reference = id(s.execute("layer.newSolid", json!({"color": "#ffffff", "name": "Ref"})).unwrap());
+    let logo = id(s.execute("layer.newSolid", json!({"color": "#ff0000", "name": "Logo"})).unwrap());
+    let follower = id(s.execute("layer.newSolid", json!({"color": "#00ff00", "name": "Follower"})).unwrap());
+    s.execute("layer.setParent", json!({"layers": [logo], "parent": rig})).unwrap();
+    s.execute_checked(
+        "prop.setExpression",
+        json!({"layer": follower, "path": "transform/position", "expression": "thisComp.layer(\"Ref\").transform.position"}),
+    )
+    .unwrap();
+    let group = s.execute("layer.group", json!({"layers": [follower, logo]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    for (command, params) in [
+        ("layer.precompose", json!({"layers": [rig], "name": "Pre"})),
+        ("edit.liftWorkArea", json!({"layers": [rig]})),
+        ("edit.extractWorkArea", json!({"layers": [rig]})),
+        ("edit.clear", json!({"layers": [reference]})),
+    ] {
+        let before = s.project.to_file_json().unwrap();
+        let undo = s.history.undo.len();
+        let err = s.execute(command, params).expect_err(command).to_string();
+        assert!(err.to_lowercase().contains("lock"), "{command}: {err}");
+        assert_eq!(s.project.to_file_json().unwrap(), before, "{command}");
+        assert_eq!(s.history.undo.len(), undo, "{command}");
+    }
+}
+
+#[test]
+fn scene_detection_keeps_a_clip_whose_folder_was_locked_meanwhile() {
+    let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.sceneEditDetection", json!({"layer": clip.0, "mode": "split"})).unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    let before = s.project.to_file_json().unwrap();
+    s.wait_jobs();
+    assert_eq!(s.project.comp(cid).unwrap().layers.len(), 1);
+    assert_eq!(s.project.to_file_json().unwrap(), before, "a locked folder keeps its clip whole");
+}
+
+#[test]
+fn expression_layer_references_are_read_without_evaluating() {
+    use crate::commands::{ExprComp as C, ExprLayer as L, ExprLayerRef as R, expr_layer_refs};
+    let r = |comp, layer| R { comp, layer };
+    let name = |n: &str| L::Name(n.into());
+    assert_eq!(expr_layer_refs("thisComp.layer(\"Ref\").position"), vec![r(C::This, name("Ref"))]);
+    assert_eq!(expr_layer_refs("thisComp.layer (\"Ref\").position"), vec![r(C::This, name("Ref"))], "space before the call");
+    assert_eq!(expr_layer_refs("thisComp.layer(\"Say \\\"hi\\\"\")"), vec![r(C::This, name("Say \"hi\""))], "escapes");
+    assert_eq!(expr_layer_refs("thisComp.layer(\"R\" + \"ef\")"), vec![r(C::This, L::Unknown)], "a computed name");
+    assert_eq!(expr_layer_refs("comp('A').layer('B b')"), vec![r(C::Named("A".into()), L::Comp), r(C::Named("A".into()), name("B b"))]);
+    assert_eq!(expr_layer_refs("var n = 1; comp(n).layer(2)"), vec![r(C::Unknown, L::Comp), r(C::Unknown, L::Unknown), r(C::Unknown, L::Index(2))]);
+    assert_eq!(expr_layer_refs("var c = thisComp; c.layer(2)"), vec![r(C::This, L::Unknown), r(C::Unknown, L::Index(2))]);
+    assert_eq!(expr_layer_refs("thisComp.layer( 3 ).position + thisComp.layer(index - 1).position"), vec![r(C::This, L::Index(3)), r(C::This, L::Unknown)]);
+    assert_eq!(expr_layer_refs("var myLayer = thisLayer, layers = 2; myLayer.name + layers + value"), vec![]);
+    assert_eq!(expr_layer_refs("thisComp.layer/*c*/(/*d*/\"Ref\" // e\n)"), vec![r(C::This, name("Ref"))], "comments");
+    assert_eq!(expr_layer_refs("thisComp.layer(\"\\u0052ef\")"), vec![r(C::This, L::Unknown), r(C::Unknown, L::Unknown)], "an escaped name is unknown");
+    let src = || C::Named("Source".into());
+    assert_eq!(expr_layer_refs("comp(\"Source\")./*c*/layer(\"Ref\")"), vec![r(src(), L::Comp), r(src(), name("Ref"))], "a comment after the dot");
+    assert_eq!(expr_layer_refs("comp(\"Source\")[\"layer\"](\"Ref\")"), vec![r(src(), L::Comp), r(src(), L::Unknown)], "bracket access");
+    assert_eq!(expr_layer_refs("comp(\"Source\").numLayers"), vec![r(src(), L::Comp), r(src(), L::Count)]);
+    assert_eq!(expr_layer_refs("var k = 0; thisComp.numLayers - thisComp[k]"), vec![r(C::This, L::Count), r(C::This, L::Unknown)]);
+    assert_eq!(expr_layer_refs("var f = thisComp.layer; f(\"Ref\")"), vec![r(C::This, L::Unknown)], "an aliased method");
+    assert_eq!(expr_layer_refs("/* thisComp.layer(\"Ref\") */ value // thisComp.layer(1)\n'thisComp.layer(2)'"), vec![], "comments and strings");
+    assert_eq!(expr_layer_refs("[value[0], value[1]]"), vec![], "literal indexing");
+    assert_eq!(expr_layer_refs("var x = [], i = 0; x[i]"), vec![r(C::Unknown, L::Unknown)], "a computed key may name any route");
+}
+
+#[test]
+fn expression_layer_references_cover_regexes_aliases_and_computed_keys() {
+    use crate::commands::{ExprComp as C, ExprLayer as L, ExprLayerRef as R, expr_layer_refs};
+    let r = |comp, layer| R { comp, layer };
+    let name = |n: &str| L::Name(n.into());
+    let src = || C::Named("Source".into());
+    // The sixth audit: regex literals, aliases, computed keys, the active camera.
+    assert_eq!(expr_layer_refs("/[//]/.test(\"x\"); thisComp.layer(\"Ref\").position[0]"), vec![r(C::This, name("Ref"))], "a regex");
+    assert_eq!(
+        expr_layer_refs("thisComp.layer(1).position[0] / 2 / thisComp.layer(2).index"),
+        vec![r(C::This, L::Index(1)), r(C::This, L::Index(2))],
+        "division"
+    );
+    assert!(expr_layer_refs("var c = thisComp, k = \"layer\"; c[k](\"Ref\")").contains(&r(C::This, L::Unknown)), "an aliased comp");
+    assert_eq!(expr_layer_refs("thisComp[\"lay\" + \"er\"](\"Ref\")"), vec![r(C::This, L::Unknown)], "a computed key");
+    assert_eq!(expr_layer_refs("var f = comp; f(\"Source\").width"), vec![r(C::Unknown, L::Unknown)], "an aliased comp()");
+    assert_eq!(
+        expr_layer_refs("var s = comp(\"Source\"), k = 0; s[k]"),
+        vec![r(src(), L::Comp), r(src(), L::Unknown), r(C::Unknown, L::Unknown)],
+        "an aliased comp value"
+    );
+    assert_eq!(expr_layer_refs("thisComp.activeCamera.position"), vec![r(C::This, L::Unknown)]);
+    assert_eq!(expr_layer_refs("var k = 0; thisLayer.source[k]"), vec![r(C::Unknown, L::Unknown)], "a precomp source");
+    assert_eq!(expr_layer_refs("thisComp.width + thisLayer.source.width + value[\"x\"]"), vec![], "plain members");
+}
+
+#[test]
+fn expression_layer_references_treat_hidden_routes_as_unknown() {
+    use crate::commands::{ExprComp as C, ExprLayer as L, ExprLayerRef as R, expr_layer_refs};
+    let r = |comp, layer| R { comp, layer };
+    let name = |n: &str| L::Name(n.into());
+    let any = |e: &str| expr_layer_refs(e).contains(&r(C::Unknown, L::Unknown));
+    // The seventh audit: postfix increments, the global object, constructors.
+    assert_eq!(expr_layer_refs("var x = 100; x++ / thisComp.layer(\"Ref\").index / 2"), vec![r(C::This, name("Ref"))], "x++ / y divides");
+    assert!(any("var c = \"thisComp\", m = \"layer\"; globalThis[c][m](\"Ref\").index"), "the global object");
+    assert!(any("\"\".constructor.constructor(\"return thisComp\")()"), "a constructor");
+    assert!(any("/thisComp/.test(x)"), "a regex naming a route");
+    // The eighth review: prelude internals, `yield /re/`, escaped names.
+    assert!(any("new Layer(__S.c, __h(__LAYER, __S.c, 1)).transform.position"), "prelude internals");
+    let refs = expr_layer_refs("function* g(){ yield /\"/; }\nthisComp.layer(1).transform.position;\n// \"");
+    assert!(refs.contains(&r(C::This, L::Index(1))), "a regex after yield: {refs:?}");
+    assert!(any("thisComp.\\u006cayer(1)"), "an escaped name");
+    // The ninth review: an allowlist of free names; declarations shadow them.
+    assert!(any("new Prop(3, 7, \"transform/position\").value"), "a prelude class");
+    assert!(any("var {containingComp: C} = thisLayer, {layer: L} = C; L.call(C, 2).transform.position"), "destructuring");
+    assert!(any("var C = thisComp.valueOf(); with (C) var L = layer; L.call(C, 2).transform.position"), "with");
+    assert!(any("Object.getOwnPropertyDescriptor(Object.getPrototypeOf(thisLayer), \"containingComp\").get.call(thisLayer)"), "reflection");
+    assert!(any("thisProject.item(1)"), "an unknown free name");
+    assert_eq!(expr_layer_refs("wiggle(2, 30) + Math.sin(time) * effect(\"Slider\")(\"Slider\") + {a: 1, b: 2}.a"), vec![], "safe names");
+    let own = "function f(a, b) { return a + b; } f(1, 2) + ((x) => x * 2)(3); for (var j = 0; j < 2; j++) {} try {} catch (e) {}";
+    assert_eq!(expr_layer_refs(own), vec![], "declared names");
+    // The tenth review: a declaration never hides a real global.
+    assert!(any("var Object; Object.getPrototypeOf(thisLayer)"), "var Object");
+    assert!(any("function f(thisProject) { return 1; } thisProject.numItems"), "a parameter named like a global");
+}
+
+/// Every expression runs in one JavaScript realm: one that may redefine the shared globals
+/// (`effect = …`) makes what any locked expression reads unknown.
+#[test]
+fn an_expression_redefining_globals_protects_every_locked_expression() {
+    let (mut s, cid, _, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| r["layer"].as_u64().unwrap();
+    let solid = |s: &mut Session, n: &str| id(s.execute("layer.newSolid", json!({"comp": cid.0, "color": "#ffffff", "name": n})).unwrap());
+    let x = solid(&mut s, "X");
+    let y = solid(&mut s, "Y");
+    let u = solid(&mut s, "U");
+    let l = solid(&mut s, "L");
+    let set = |s: &mut Session, layer: u64, e: &str| {
+        s.execute_checked("prop.setExpression", json!({"comp": cid.0, "layer": layer, "path": "transform/opacity", "expression": e})).unwrap();
+    };
+    set(&mut s, l, "effect(\"Slider\")(\"Slider\")");
+    let group = s.execute("layer.group", json!({"comp": cid.0, "layers": [l]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"comp": cid.0, "group": group, "locked": true})).unwrap();
+    // Nothing redefines `effect`: the locked layer reads only itself.
+    s.execute("edit.clear", json!({"comp": cid.0, "layers": [y]})).unwrap();
+    for e in ["effect = function () { return 0; }; value", "Math.sin = function () { return 0; }; value"] {
+        set(&mut s, u, e);
+        let err = s.execute("edit.clear", json!({"comp": cid.0, "layers": [x]})).unwrap_err().to_string();
+        assert!(err.contains("locked"), "{e}: {err}");
+    }
+}
+
+#[test]
+fn removing_what_a_locked_layer_reads_through_others_is_refused() {
+    let (mut s, cid, _, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| r["layer"].as_u64().unwrap();
+    let null = |s: &mut Session, n: &str| id(s.execute("layer.newNull", json!({"comp": cid.0, "name": n})).unwrap());
+    let solid = |s: &mut Session, n: &str| id(s.execute("layer.newSolid", json!({"comp": cid.0, "color": "#ffffff", "name": n})).unwrap());
+    // L is matted by M, M is parented to P.
+    let p = null(&mut s, "P");
+    let m = solid(&mut s, "M");
+    let l = solid(&mut s, "L");
+    s.execute("layer.setParent", json!({"comp": cid.0, "layers": [m], "parent": p})).unwrap();
+    s.execute("layer.setTrackMatte", json!({"comp": cid.0, "layer": l, "matte": m, "kind": "alpha"})).unwrap();
+    // F reads E's position, E is parented to Q.
+    let q = null(&mut s, "Q");
+    let e = solid(&mut s, "E");
+    let f = solid(&mut s, "F");
+    s.execute("layer.setParent", json!({"comp": cid.0, "layers": [e], "parent": q})).unwrap();
+    s.execute_checked(
+        "prop.setExpression",
+        json!({"comp": cid.0, "layer": f, "path": "transform/position", "expression": "thisComp.layer(\"E\").toWorld([0, 0])"}),
+    )
+    .unwrap();
+    let group = s.execute("layer.group", json!({"comp": cid.0, "layers": [l, f]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"comp": cid.0, "group": group, "locked": true})).unwrap();
+    let before = s.project.to_file_json().unwrap();
+    for gone in [p, q] {
+        let err = s.execute("edit.clear", json!({"comp": cid.0, "layers": [gone]})).unwrap_err().to_string();
+        assert!(err.contains("locked"), "{err}");
+    }
+    assert_eq!(s.project.to_file_json().unwrap(), before);
+}
+
+#[test]
+fn reduce_project_keeps_a_comp_a_locked_layer_reads() {
+    let (mut s, cid, _, _) = setup(80, 48, 1.0, shot_frame);
+    s.execute("comp.new", json!({"name": "Source", "width": 80, "height": 48, "duration": 1})).unwrap();
+    let source = s.active_comp_id().unwrap();
+    s.execute("layer.newSolid", json!({"comp": source.0, "color": "#ffffff", "name": "Ref"})).unwrap();
+    let follower = s.execute("layer.newSolid", json!({"comp": cid.0, "color": "#00ff00", "name": "Follower"})).unwrap()["layer"].as_u64().unwrap();
+    let expr = "comp(\"Source\").layer(\"Ref\").transform.position";
+    s.execute_checked("prop.setExpression", json!({"comp": cid.0, "layer": follower, "path": "transform/position", "expression": expr})).unwrap();
+    let group = s.execute("layer.group", json!({"comp": cid.0, "layers": [follower]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"comp": cid.0, "group": group, "locked": true})).unwrap();
+    s.state.project_selection = vec![cid];
+    let err = s.execute("file.reduceProject", json!({})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    assert!(s.project.comp(source).is_some());
+}
+
+#[test]
+fn a_layer_in_a_hidden_folder_is_not_tracked() {
+    let (mut s, _, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let err = s.execute("track.new", json!({"layer": clip.0, "kind": "transform"})).unwrap_err().to_string();
+    assert!(err.contains("no pixels"), "{err}");
+}
+
+#[test]
+fn removing_a_layer_a_locked_layer_counts_is_refused() {
+    let (mut s, cid, _, _) = setup(80, 48, 1.0, shot_frame);
+    s.execute("comp.new", json!({"name": "Source", "width": 80, "height": 48, "duration": 1})).unwrap();
+    let source = s.active_comp_id().unwrap();
+    let any = s.execute("layer.newSolid", json!({"comp": source.0, "color": "#ffffff", "name": "Any"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("comp.new", json!({"name": "Empty", "width": 80, "height": 48, "duration": 1})).unwrap();
+    let empty = s.active_comp_id().unwrap();
+    let follower = s.execute("layer.newSolid", json!({"comp": cid.0, "color": "#00ff00", "name": "Follower"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute_checked(
+        "prop.setExpression",
+        json!({"comp": cid.0, "layer": follower, "path": "transform/rotation", "expression": "comp(\"Source\").numLayers"}),
+    )
+    .unwrap();
+    // An empty comp the locked layer reads can't be deleted either.
+    s.execute_checked("prop.setExpression", json!({"comp": cid.0, "layer": follower, "path": "transform/opacity", "expression": "comp(\"Empty\").width"}))
+        .unwrap();
+    let group = s.execute("layer.group", json!({"comp": cid.0, "layers": [follower]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"comp": cid.0, "group": group, "locked": true})).unwrap();
+    let err = s.execute("edit.clear", json!({"comp": source.0, "layers": [any]})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    let err = s.execute("project.delete", json!({"items": [empty.0]})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+}
+
+#[test]
+fn removing_a_grandparent_of_a_locked_layer_is_refused() {
+    let (mut s, cid, _, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| r["layer"].as_u64().unwrap();
+    let g = id(s.execute("layer.newNull", json!({"comp": cid.0, "name": "G"})).unwrap());
+    let p = id(s.execute("layer.newNull", json!({"comp": cid.0, "name": "P"})).unwrap());
+    let l = id(s.execute("layer.newSolid", json!({"comp": cid.0, "color": "#ffffff", "name": "L"})).unwrap());
+    s.execute("layer.setParent", json!({"comp": cid.0, "layers": [p], "parent": g})).unwrap();
+    s.execute("layer.setParent", json!({"comp": cid.0, "layers": [l], "parent": p})).unwrap();
+    let group = s.execute("layer.group", json!({"comp": cid.0, "layers": [l]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"comp": cid.0, "group": group, "locked": true})).unwrap();
+    let before = s.project.to_file_json().unwrap();
+    let err = s.execute("edit.clear", json!({"comp": cid.0, "layers": [g]})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    assert_eq!(s.project.to_file_json().unwrap(), before);
+}
+
+#[test]
+fn deleting_a_comp_a_locked_layer_reads_is_refused() {
+    let (mut s, cid, _, _) = setup(80, 48, 1.0, shot_frame);
+    s.execute("comp.new", json!({"name": "Source", "width": 80, "height": 48, "duration": 1})).unwrap();
+    let source = s.active_comp_id().unwrap();
+    s.execute("layer.newSolid", json!({"comp": source.0, "color": "#ffffff", "name": "Ref"})).unwrap();
+    let follower = s.execute("layer.newSolid", json!({"comp": cid.0, "color": "#00ff00", "name": "Follower"})).unwrap()["layer"].as_u64().unwrap();
+    let expr = "comp(\"Source\").layer(\"Ref\").transform.position";
+    s.execute_checked("prop.setExpression", json!({"comp": cid.0, "layer": follower, "path": "transform/position", "expression": expr})).unwrap();
+    let group = s.execute("layer.group", json!({"comp": cid.0, "layers": [follower]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"comp": cid.0, "group": group, "locked": true})).unwrap();
+    let before = s.project.to_file_json().unwrap();
+    let err = s.execute("project.delete", json!({"items": [source.0]})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    assert_eq!(s.project.to_file_json().unwrap(), before);
+}
+
+#[test]
+fn split_and_precompose_is_one_step_even_with_one_undo_level() {
+    let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);
+    s.prefs.general.undo_levels = 1;
+    let before = s.project.to_file_json().unwrap();
+    s.execute("layer.sceneEditDetection", json!({"layer": clip.0, "mode": "splitPrecompose", "wait": true})).unwrap();
+    assert_eq!(s.project.comp(cid).unwrap().layers.len(), 3);
+    assert!(s.undo());
+    assert_eq!(s.project.to_file_json().unwrap(), before, "one undo restores the clip");
+}
+
+#[test]
+fn expressions_in_other_comps_protect_the_layers_they_read() {
+    let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| r["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let reference = id(s.execute("layer.newSolid", json!({"color": "#ffffff", "name": "Ref"})).unwrap());
+    let main = s.project.item(cid).unwrap().name.clone();
+    s.execute("comp.new", json!({"name": "Other", "width": 80, "height": 48, "duration": 1})).unwrap();
+    let other = s.active_comp_id().unwrap();
+    let follower = id(s.execute("layer.newSolid", json!({"color": "#00ff00", "name": "Follower"})).unwrap());
+    let expr = format!("comp(\"{main}\").layer (\"Ref\").transform.position");
+    s.execute_checked("prop.setExpression", json!({"comp": other.0, "layer": follower, "path": "transform/position", "expression": expr})).unwrap();
+    let group = s.execute("layer.group", json!({"comp": other.0, "layers": [follower]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"comp": other.0, "group": group, "locked": true})).unwrap();
+    let err = s.execute("edit.clear", json!({"comp": cid.0, "layers": [reference]})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    // A layer of this comp named like the referenced one in the other comp is not protected.
+    s.execute("layer.newSolid", json!({"comp": other.0, "color": "#ff0000", "name": "Ref"})).unwrap();
+    let local = s.project.comp(other).unwrap().layers[0].id;
+    s.execute("edit.clear", json!({"comp": other.0, "layers": [local.0]})).unwrap();
+}
+
+#[test]
+fn layers_made_from_a_source_join_its_folder() {
+    let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let text = s.execute("layer.newText", json!({"text": "Hi", "size": 20})).unwrap()["layer"].as_u64().unwrap();
+    let group = s.execute("layer.group", json!({"layers": [text]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+    let r = s.execute("layer.create", json!({"op": "shapesFromText", "layers": [text]})).unwrap();
+    let c = s.project.comp(cid).unwrap();
+    for v in r["layers"].as_array().unwrap() {
+        let l = LayerId(v.as_u64().unwrap());
+        assert_eq!(c.layer_group(l).map(|g| g.id), Some(group));
+        assert!(!c.layer_effectively_visible(l));
+    }
+}
+
+#[test]
+fn scene_split_precompose_refuses_a_source_a_locked_folder_uses() {
+    let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let child = s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 20, "height": 20})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setParent", json!({"layers": [child], "parent": clip.0})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [child]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    let before = s.project.to_file_json().unwrap();
+    let undo = s.history.undo.len();
+    assert!(s.execute("layer.sceneEditDetection", json!({"layer": clip.0, "mode": "splitPrecompose", "wait": true})).is_err());
+    assert_eq!(s.project.to_file_json().unwrap(), before);
+    assert_eq!(s.history.undo.len(), undo);
+    assert_eq!(s.project.comp(cid).unwrap().layers.len(), 2);
+}
+
+#[test]
+fn an_indexed_expression_protects_the_layers_it_can_shift() {
+    let (mut s, _, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| r["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let reference = id(s.execute("layer.newSolid", json!({"color": "#ffffff", "name": "Ref"})).unwrap());
+    let follower = id(s.execute("layer.newSolid", json!({"color": "#00ff00", "name": "Follower"})).unwrap());
+    // Follower is layer 1, Ref layer 2, Clip layer 3.
+    s.execute_checked("prop.setExpression", json!({"layer": follower, "path": "transform/position", "expression": "thisComp.layer(2).transform.position"}))
+        .unwrap();
+    let group = s.execute("layer.group", json!({"layers": [follower]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    let err = s.execute("edit.clear", json!({"layers": [reference]})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    // Layer 3 is below the reference: removing it shifts nothing the expression reads.
+    s.execute("edit.clear", json!({"layers": [clip.0]})).unwrap();
+}
+
+#[test]
+fn split_pieces_stay_in_their_folder() {
+    let (mut s, cid, clip, item) = setup(80, 48, 1.0, shot_frame);
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false, "audio": false})).unwrap();
+    let in_folder = |s: &Session, skip: &[LayerId]| {
+        let c = s.project.comp(cid).unwrap();
+        assert!(c.layer_groups_are_valid());
+        for l in c.layers.iter().filter(|l| !skip.contains(&l.id)) {
+            assert_eq!(c.layer_group(l.id).map(|g| g.id), Some(group), "{}", l.name);
+            assert!(!c.layer_effectively_visible(l.id) && !c.layer_effectively_audio(l.id), "{}", l.name);
+        }
+        c.layers.len()
+    };
+    s.execute("layer.sceneEditDetection", json!({"layer": clip.0, "mode": "split", "wait": true})).unwrap();
+    assert_eq!(in_folder(&s, &[]), 3, "Scene Edit Detection pieces");
+    s.undo();
+    let r = s.execute("footage.rippleInsertEdit", json!({"item": item.0, "at": 0.5})).unwrap();
+    assert_eq!(in_folder(&s, &[LayerId(r["layer"].as_u64().unwrap())]), 3, "the ripple's split tail");
+    s.undo();
+    s.execute("comp.workArea", json!({"start": 0.3, "end": 0.6})).unwrap();
+    s.execute("edit.liftWorkArea", json!({"layers": [clip.0]})).unwrap();
+    assert_eq!(in_folder(&s, &[]), 2, "Lift's tail");
+}
+
+#[test]
+fn ending_text_edit_keeps_the_parent_of_a_locked_layer() {
+    let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);
+    let id = |r: Value| LayerId(r["layer"].as_u64().unwrap());
+    s.execute("layer.select", json!({"layers": [clip.0]})).unwrap();
+    let text = id(s.execute("layer.newText", json!({"text": "Hi", "size": 20})).unwrap());
+    let child = id(s.execute("layer.newSolid", json!({"color": "#ffffff", "width": 20, "height": 20})).unwrap());
+    s.execute("layer.setParent", json!({"layers": [child.0], "parent": text.0})).unwrap();
+    s.execute("text.edit", json!({"layer": text.0, "created": true})).unwrap();
+    s.execute("text.setSelection", json!({"select": "all"})).unwrap();
+    s.execute("text.delete", json!({})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [child.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    s.execute("text.endEdit", json!({})).unwrap();
+    let c = s.project.comp(cid).unwrap();
+    assert!(c.layer(text).is_some(), "the locked child's parent stays");
+    assert_eq!(c.layer(child).unwrap().parent, Some(text));
+}
+
 #[test]
 fn scene_edit_detection_finds_cuts() {
     let (mut s, cid, clip, _) = setup(80, 48, 1.0, shot_frame);

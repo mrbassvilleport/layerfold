@@ -684,7 +684,7 @@ Layer.prototype = {
   },
   get hasVideo() { return this.__info[8]; },
   get enabled() { return this.__info[11]; },
-  get active() { return this.__info[11] && time >= this.inPoint && time < this.outPoint; },
+  get active() { return this.__info[12] && time >= this.inPoint && time < this.outPoint; },
   get containingComp() { return new Comp(this.__c); },
   // The source item (AE's Layer.source): a Comp for a precomp layer, a Footage for footage, solid
   // and model layers, null for text, shape, null, camera and light layers (#809).

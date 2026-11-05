@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI for our modified EffectCraft build (WiX Toolset v5). Built by editor/scripts/package-msi.ps1:
+
+    wix build effectcraft-modified.wxs installer-ui.wxs -arch x64 -d Version=0.16.0 -d StageDir=... -d IconPath=... -o out.msi
+
+  Adapted from upstream packaging/windows/effectcraft.wxs. It installs side by side with an official
+  EffectCraft and never upgrades or removes it: its own UpgradeCode, product name, folder and registry
+  keys; no App Paths entry (upstream owns "App Paths\effectcraft.exe"). StageDir is the whole
+  distribution: both executables plus licenses, notices and sources, which must ship with them.
+
+  Per-machine install into Program Files (or a folder the user picks): Start Menu shortcut, optional
+  desktop shortcut (DESKTOPSHORTCUT=0 skips it), the folder on the system PATH so agents and terminals
+  find effectcraft-cli, and .ecproj files opening in this build. A newer or same-version MSI replaces
+  the installed copy in place; settings and projects are left alone.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Layerfold"
+      Manufacturer="mrbassvilleport"
+      Version="$(var.Version)"
+      UpgradeCode="30651D3E-29B0-49EF-BBEC-1739873ACA8E"
+      Scope="perMachine"
+      Compressed="yes"
+      Language="1033">
+    <SummaryInformation Description="Layerfold: independent motion graphics editor based on EffectCraft" Manufacturer="mrbassvilleport" />
+    <!-- Rebuilds of one version (fixes between releases) replace each other: MSI versions are numeric.
+         Removing the old copy inside the install transaction lets a failed upgrade roll back to it. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+        DowngradeErrorMessage="A newer version of Layerfold is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <UIRef Id="EffectcraftUI" />
+
+    <Icon Id="EffectcraftIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="EffectcraftIcon.ico" />
+
+    <!-- An upgrade, repair or silent reinstall goes where the installed copy already is. A folder
+         passed on the command line (INSTALLFOLDER=...) wins. -->
+    <Property Id="INSTALLFOLDER" Secure="yes" />
+    <Property Id="PREVIOUSINSTALLFOLDER" Secure="yes">
+      <RegistrySearch Id="PreviousInstallFolder" Root="HKLM" Type="directory" Key="Software\EffectCraft Modified" Name="InstallFolder" />
+    </Property>
+    <SetProperty Id="INSTALLFOLDER" Value="[PREVIOUSINSTALLFOLDER]" After="AppSearch" Sequence="both"
+        Condition="PREVIOUSINSTALLFOLDER AND NOT INSTALLFOLDER" />
+
+    <!-- Never install into a folder that holds another EffectCraft (the official one, or any copy not
+         installed by this package): both would own effectcraft.exe there, and installing, repairing or
+         removing one would break the other. CheckTargetFolder (check-target-folder.js) looks at the folder itself, so junctions
+         and 8.3 spellings of it are caught: an effectcraft.exe without our installed BUILD.txt marks it
+         taken; the folder our installed copy registered stays ours. A folder that can't be inspected
+         (scripting blocked, unreadable BUILD.txt) stops the install. The path checks below (the
+         official App Paths folder, Program Files\EffectCraft) also apply. Checked before
+         InstallValidate: nothing has changed yet. -->
+    <Property Id="OFFICIALFOLDER" Secure="yes">
+      <RegistrySearch Id="OfficialFolder" Root="HKLM" Type="directory"
+          Key="Software\Microsoft\Windows\CurrentVersion\App Paths\effectcraft.exe" Name="Path" />
+    </Property>
+    <!-- Conditions don't expand [Property] inside string literals: build the default path first. -->
+    <SetProperty Id="OFFICIALDEFAULTFOLDER" Value="[ProgramFiles64Folder]EffectCraft\" Before="RejectOfficialFolder" Sequence="execute" />
+    <CustomAction Id="CheckTargetFolder" Script="jscript" ScriptSourceFile="$(sys.SOURCEFILEDIR)check-target-folder.js" Return="check" />
+    <CustomAction Id="RejectOfficialFolder"
+        Error="This folder already holds another EffectCraft. Choose another folder for Layerfold." />
+
+    <!-- .ecproj: always offered in Open With and Default apps; made the default only when no other
+         program owns the extension (or it is already ours). An elevated install's HKCR doesn't merge
+         the installing user's classes, and a silent install's AppSearch runs as SYSTEM, whose HKCU
+         isn't the user's: the user's classes are read from their own hive, HKEY_USERS\[UserSID]_Classes
+         (what HKCU\Software\Classes maps to; UserSID is the user who started the install). Windows
+         keeps a user's own choice (UserChoice) either way. -->
+    <Property Id="ECPROJMACHINE" Secure="yes">
+      <RegistrySearch Id="EcprojMachine" Root="HKLM" Key="Software\Classes\.ecproj" Type="raw" />
+    </Property>
+    <Property Id="ECPROJUSER" Secure="yes">
+      <RegistrySearch Id="EcprojUser" Root="HKU" Key="[UserSID]_Classes\.ecproj" Type="raw" />
+    </Property>
+
+    <InstallExecuteSequence>
+      <Custom Action="CheckTargetFolder" After="CostFinalize" Condition="NOT REMOVE" />
+      <Custom Action="RejectOfficialFolder" After="CheckTargetFolder"
+          Condition="NOT REMOVE AND (TARGETTAKEN OR (OFFICIALFOLDER AND INSTALLFOLDER ~= OFFICIALFOLDER) OR INSTALLFOLDER ~= OFFICIALDEFAULTFOLDER)" />
+    </InstallExecuteSequence>
+
+    <!-- The desktop shortcut: on by default for a fresh install; an upgrade keeps the earlier choice. -->
+    <Property Id="DESKTOPSHORTCUT" Value="1" Secure="yes" />
+    <Property Id="PREVIOUSDESKTOPSHORTCUT" Secure="yes">
+      <RegistrySearch Id="PreviousDesktopShortcut" Root="HKLM" Type="raw" Key="Software\EffectCraft Modified" Name="DesktopShortcut" />
+    </Property>
+    <SetProperty Id="DESKTOPSHORTCUT" Value="[PREVIOUSDESKTOPSHORTCUT]" After="SetINSTALLFOLDER" Sequence="both"
+        Condition="WIX_UPGRADE_DETECTED" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Layerfold" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
+
+    <Feature Id="Main" Title="Layerfold" Level="1">
+      <ComponentGroupRef Id="EffectcraftFiles" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="EffectcraftFiles" Directory="INSTALLFOLDER">
+      <Component Id="EffectcraftApp">
+        <File Id="EffectcraftExe" Source="$(var.StageDir)\effectcraft.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Layerfold"
+              Description="Layerfold motion graphics and visual effects" WorkingDirectory="INSTALLFOLDER"
+              Advertise="yes" Icon="EffectcraftIcon.ico" IconIndex="0" />
+        </File>
+        <RegistryValue Root="HKLM" Key="Software\EffectCraft Modified" Name="InstallFolder" Value="[INSTALLFOLDER]" Type="string" />
+        <!-- The desktop shortcut choice, for the next upgrade (empty: none). -->
+        <RegistryValue Root="HKLM" Key="Software\EffectCraft Modified" Name="DesktopShortcut" Value="[DESKTOPSHORTCUT]" Type="string" />
+      </Component>
+
+      <Component Id="EffectcraftCli">
+        <File Id="EffectcraftCliExe" Source="$(var.StageDir)\effectcraft-cli.exe" KeyPath="yes" />
+        <!-- effectcraft-cli on PATH: terminals and agents (MCP) run it from any folder. -->
+        <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" System="yes" Permanent="no" />
+      </Component>
+
+      <!-- The project file type (effectcraft.exe takes the project path), in Open With and in
+           Settings > Default apps (Capabilities + RegisteredApplications). -->
+      <Component Id="EcprojType">
+        <RegistryValue Root="HKCR" Key="EffectCraftModified.Project" Value="Layerfold project" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKCR" Key="EffectCraftModified.Project\DefaultIcon" Value="&quot;[#EffectcraftExe]&quot;,0" Type="string" />
+        <RegistryValue Root="HKCR" Key="EffectCraftModified.Project\shell\open\command" Value="&quot;[#EffectcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKCR" Key=".ecproj\OpenWithProgids" Name="EffectCraftModified.Project" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\EffectCraft Modified\Capabilities" Name="ApplicationName" Value="Layerfold" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\EffectCraft Modified\Capabilities" Name="ApplicationDescription" Value="Motion graphics and visual effects" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\EffectCraft Modified\Capabilities\FileAssociations" Name=".ecproj" Value="EffectCraftModified.Project" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\RegisteredApplications" Name="Layerfold" Value="Software\EffectCraft Modified\Capabilities" Type="string" />
+      </Component>
+      <!-- The default is only ever written where none exists (NeverOverwrite: a repair or upgrade
+           leaves whatever owns it by then) and never removed (Permanent), as Windows asks of
+           extension defaults: after uninstall it names a ProgId that is gone, and Windows asks which
+           program to use. -->
+      <Component Id="EcprojDefault" NeverOverwrite="yes" Permanent="yes"
+          Condition="(NOT ECPROJMACHINE OR ECPROJMACHINE = &quot;EffectCraftModified.Project&quot;) AND (NOT ECPROJUSER OR ECPROJUSER = &quot;EffectCraftModified.Project&quot;)">
+        <RegistryValue Root="HKCR" Key=".ecproj" Value="EffectCraftModified.Project" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKCR" Key=".ecproj" Name="Content Type" Value="application/x-effectcraft-project" Type="string" />
+      </Component>
+
+      <!-- Licenses, notices, sources and docs: everything else in the distribution. -->
+      <Files Include="$(var.StageDir)\**">
+        <Exclude Files="$(var.StageDir)\effectcraft.exe" />
+        <Exclude Files="$(var.StageDir)\effectcraft-cli.exe" />
+      </Files>
+
+      <!-- A component under the user's profile folders needs an HKCU key path (ICE38, ICE43). -->
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Condition="DESKTOPSHORTCUT = &quot;1&quot;">
+        <Shortcut Id="DesktopShortcut" Name="Layerfold" Description="Layerfold motion graphics and visual effects"
+            Target="[#EffectcraftExe]" WorkingDirectory="INSTALLFOLDER" Icon="EffectcraftIcon.ico" IconIndex="0" />
+        <RegistryValue Root="HKCU" Key="Software\EffectCraft Modified" Name="DesktopShortcut" Value="1" Type="string" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

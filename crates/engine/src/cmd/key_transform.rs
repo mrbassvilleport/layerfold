@@ -26,14 +26,20 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = s.active_comp_id().ok_or(EngineError::NoComp)?;
     let merge = merge_p(p);
     let from_start = b_p(p, "fromStart").unwrap_or(false) && merge.is_some();
-    let gesture = from_start && merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m)) && s.key_move.as_ref().map(|g| g.merge.as_str()) == merge;
-    let (sel, base) = match (&s.key_move, s.history.undo.last()) {
-        (Some(g), Some((_, b))) if gesture => (g.from.clone(), Some(b.clone())),
+    let gesture = from_start
+        && merge.is_some_and(|m| s.history.merge_key.as_deref() == Some(m))
+        && s.key_move.as_ref().is_some_and(|g| Some(g.merge.as_str()) == merge && g.revision == s.revision);
+    let (sel, base) = match &s.key_move {
+        Some(g) if gesture => (g.from.clone(), Some(g.base.clone())),
         _ => (s.state.selected_keys.clone(), None),
     };
-    if from_start {
-        s.key_move = merge.map(|m| crate::KeyMove { merge: m.to_string(), from: sel.clone(), total: Tick::ZERO });
-    }
+    let next = merge.filter(|_| from_start).map(|m| crate::KeyMove {
+        merge: m.to_string(),
+        from: sel.clone(),
+        total: Tick::ZERO,
+        revision: 0,
+        base: base.clone().unwrap_or_else(|| s.project.clone()),
+    });
     // The comp as it was when the drag started (its keys are what the transform applies to).
     let start = base.clone().unwrap_or_else(|| s.project.clone());
     let comp = start.comp(cid).ok_or(EngineError::NoComp)?;
@@ -60,7 +66,7 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         fr.snap_nearest(Tick::from_seconds_f64(x.max(0.0)))
     };
     let touch_values = vs != 1.0 || voff != 0.0;
-    s.edit("Transform Keyframes", merge, |proj, st| {
+    let r = s.edit("Transform Keyframes", merge, |proj, st| {
         if let Some(b) = base {
             *proj = (*b).clone();
         }
@@ -71,6 +77,10 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let mut new_sel = vec![];
         for ((lid, uid), times) in groups {
+            if comp.layer_effectively_locked(lid) {
+                new_sel.extend(times.iter().map(|time| KeyRef { layer: lid, prop: uid, time: *time }));
+                continue;
+            }
             let Some(layer) = comp.layer_mut(lid) else { continue };
             if layer.switches.locked {
                 new_sel.extend(times.into_iter().map(|time| KeyRef { layer: lid, prop: uid, time }));
@@ -110,7 +120,12 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         }
         st.selected_keys = new_sel;
         Ok(json!({"keys": st.selected_keys.len()}))
-    })
+    })?;
+    // Only a step that applied counts towards the drag.
+    if from_start {
+        s.key_move = next.map(|g| crate::KeyMove { revision: s.revision, ..g });
+    }
+    Ok(r)
 }
 
 /// Spatial tangents of one key of a spatial property (motion path handles), relative to the key

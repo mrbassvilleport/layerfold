@@ -1,5 +1,5 @@
 use super::{
-    EngineError, Ids, ItemId, ItemKind, Justify, KV, Label, Layer, LayerId, LayerSource, Project, Result, Session, Solid, TextDoc, Tick, Value, b_p, bad,
+    Comp, EngineError, Ids, ItemId, ItemKind, Justify, KV, Label, Layer, LayerId, LayerSource, Project, Result, Session, Solid, TextDoc, Tick, Value, b_p, bad,
     build, comp_id, f_p, json, limits, str_p,
 };
 
@@ -63,16 +63,31 @@ pub(crate) fn insert_layer_at(proj: &mut Project, st: &mut crate::EditorState, c
         crate::cmd::model3d::add_geometry_options(&mut proj.next_id, &mut layer);
     }
     let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
-    let at = match at {
-        Some(i) => i.min(comp.layers.len()),
-        None => st.selected_layers.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0),
-    };
+    let at = insertion_index(comp, &st.selected_layers, at)?;
     let id = layer.id;
     comp.layers.insert(at, layer);
     st.selected_layers = vec![id];
     st.selected_props.clear();
     st.selected_keys.clear();
     Ok(id)
+}
+
+/// Resolve and validate a new layer's stack position before insertion or file import.
+pub(crate) fn insertion_index(comp: &Comp, selected: &[LayerId], at: Option<usize>) -> Result<usize> {
+    let at = match at {
+        Some(i) => i.min(comp.layers.len()),
+        None => selected.first().and_then(|id| comp.layers.iter().position(|l| l.id == *id)).unwrap_or(0),
+    };
+    // A gap before a folder's first member is outside it; gaps between its members join it.
+    // Inclusive ancestor membership also protects a child of a locked parent folder.
+    if comp
+        .layers
+        .get(at)
+        .is_some_and(|below| comp.layer_groups.iter().any(|g| g.locked && g.members.contains(&below.id) && g.members.first() != Some(&below.id)))
+    {
+        return Err(EngineError::Other("cannot insert a new layer inside a locked group".into()));
+    }
+    Ok(at)
 }
 
 fn solids_folder(proj: &mut Project) -> ItemId {

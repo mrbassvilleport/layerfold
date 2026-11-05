@@ -191,6 +191,19 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = items_p(s, p, c)?;
     let doomed = doomed_items(&s.project, &ids);
     let n = doomed.len();
+    // A deleted comp takes its folders along; a surviving comp keeps its locked folders whole.
+    for (cid, comp) in s.project.comps().filter(|(id, _)| !doomed.contains(id)) {
+        let gone: Vec<effectcraft_project::LayerId> =
+            comp.layers.iter().filter(|l| l.source.item().is_some_and(|i| doomed.contains(&i))).map(|l| l.id).collect();
+        if let Some(l) = super::locked_dependant(&s.project, *cid, &gone) {
+            let name = s.project.item(*cid).map(|i| i.name.clone()).unwrap_or_default();
+            return Err(bad(c, format!("“{}” in “{name}” is in a locked layer group; unlock the group first", l.name)));
+        }
+    }
+    // A deleted comp that a surviving locked layer reads (`comp("X").layer(…)`, `.numLayers`).
+    if let Some(l) = super::locked_reader_of_comps(&s.project, &doomed) {
+        return Err(bad(c, format!("“{}” in a locked layer group reads a deleted composition; unlock the group first", l.name)));
+    }
     s.edit("Delete Items", None, |proj, st| {
         for id in &doomed {
             proj.items.remove(id);
@@ -247,6 +260,17 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
                     let mut next = proj.next_id;
                     l.props.reassign_uids(&mut next);
                     proj.next_id = next + 1;
+                }
+                let mut group_ids = std::collections::HashMap::new();
+                for g in &mut comp.layer_groups {
+                    let old = g.id;
+                    g.id = proj.next_id;
+                    group_ids.insert(old, g.id);
+                    proj.next_id = proj.next_id.checked_add(1).ok_or_else(|| bad(c, "project id space is exhausted"))?;
+                    g.members = g.members.iter().filter_map(|id| map.get(id).copied()).collect();
+                }
+                for g in &mut comp.layer_groups {
+                    g.parent = g.parent.and_then(|id| group_ids.get(&id).copied());
                 }
                 for l in &mut comp.layers {
                     l.parent = l.parent.and_then(|p| map.get(&p).copied());

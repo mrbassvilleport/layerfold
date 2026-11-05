@@ -880,7 +880,12 @@ impl Inner {
                 let vf = src
                     .video_frame(FrameRequest::full(filmcraft_time::Tick(mt.0)))
                     .map_err(MediaError::from)
-                    .inspect_err(|e| self.note_problem(path, &footage.codec, e))?;
+                    // One bad spot found for a thumbnail says nothing about the frame on screen.
+                    .inspect_err(|e| {
+                        if !filmcraft_media::cancel::background() {
+                            self.note_problem(path, &footage.codec, e);
+                        }
+                    })?;
                 // A movie shown turned a quarter (a phone held upright): the footage's size and
                 // the render's are the turned picture's, the decoded frame's are the file's.
                 let side = |(w, h): (u32, u32)| if crate::probe::swaps_sides(turn) { (h, w) } else { (w, h) };
@@ -927,6 +932,11 @@ impl FootageSource for MediaPool {
     /// hold the decoder the frame under the pointer waits for (#329).
     fn cancellable(&self, cancel: &Arc<AtomicBool>, f: &mut dyn FnMut()) {
         filmcraft_media::cancel::with_cancel(cancel, f)
+    }
+    /// A thumbnail's decoder gets fewer threads and doesn't outlive the next thumbnail: each costs
+    /// hundreds of MB at 4K.
+    fn background(&self, f: &mut dyn FnMut()) {
+        filmcraft_media::cancel::with_background(true, f)
     }
     fn frame(&self, item: ItemId, footage: &Footage, t: Tick) -> Option<Arc<Image>> {
         self.frame_sized(item, footage, t, None, FloatCurve::Srgb)

@@ -9,7 +9,9 @@
 pub mod build;
 pub mod essential;
 mod file_check;
+mod layer_groups;
 pub mod limits;
+pub use layer_groups::{LayerGroup, MAX_GROUP_DEPTH, MAX_GROUP_ID};
 pub mod props;
 pub mod render_queue;
 pub mod render_templates;

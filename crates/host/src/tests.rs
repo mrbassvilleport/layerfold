@@ -2,6 +2,43 @@ use serde_json::json;
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
+fn each_control_token_is_new_and_replaces_the_last_file() {
+    let dir = std::env::temp_dir().join(format!("effectcraft-token-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("control-1.token");
+    let first = crate::save_new_token(&path).unwrap();
+    let second = crate::save_new_token(&path).unwrap();
+    assert_eq!(first.len(), 64);
+    assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), second);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A link planted at the token's path must not receive the token.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_planted_link_does_not_receive_the_control_token() {
+    let dir = std::env::temp_dir().join(format!("effectcraft-token-link-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("target.txt");
+    std::fs::write(&target, "untouched").unwrap();
+    let path = dir.join("control-1.token");
+    #[cfg(unix)]
+    let planted = std::os::unix::fs::symlink(&target, &path);
+    // Creating a link on Windows needs Developer Mode or elevation: nothing to test without them.
+    #[cfg(windows)]
+    let planted = std::os::windows::fs::symlink_file(&target, &path);
+    if planted.is_ok() {
+        let token = crate::save_new_token(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "untouched");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), token);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
 fn storage_overflow_cannot_bypass_duplicate_output_protection() {
     for same_folder in [true, false] {
         refuse_overflow_collision(same_folder);
@@ -260,16 +297,13 @@ fn render_queue_exports_to_a_sink() {
     let mut s = super::session();
     s.exporter = Some(Arc::new(super::FileExporter { sink: Some(Arc::new(move |p: &str, d: Vec<u8>| g.lock().unwrap().push((p.to_string(), d)))) }));
     s.execute("file.openDemoProject", json!({})).unwrap();
-    // Rooted without a drive letter is not absolute on Windows, where the engine joins it to the home drive.
-    let dir = if cfg!(windows) { "C:/no-such-dir-effectcraft-sink-test" } else { "/no-such-dir-effectcraft-sink-test" };
+    let dir = std::env::temp_dir().join(format!("ec-sink-no-directory-{}", std::process::id()));
+    assert!(!dir.exists(), "the sink test starts without an output directory");
+    s.execute("renderQueue.add", json!({"format": "gif", "output": dir.join("a.gif"), "resolution": 0.0625, "timeSpan": "custom", "start": 0.0, "end": 0.2}))
+        .unwrap();
     s.execute(
         "renderQueue.add",
-        json!({"format": "gif", "output": format!("{dir}/a.gif"), "resolution": 0.0625, "timeSpan": "custom", "start": 0.0, "end": 0.2}),
-    )
-    .unwrap();
-    s.execute(
-        "renderQueue.add",
-        json!({"format": "png", "output": format!("{dir}/seq_[##].png"), "resolution": 0.0625, "timeSpan": "custom", "start": 0.0, "end": 0.1}),
+        json!({"format": "png", "output": dir.join("seq_[##].png"), "resolution": 0.0625, "timeSpan": "custom", "start": 0.0, "end": 0.1}),
     )
     .unwrap();
     s.execute("renderQueue.render", json!({"wait": true})).unwrap();
@@ -277,12 +311,11 @@ fn render_queue_exports_to_a_sink() {
     let mut got = got.lock().unwrap().clone();
     got.sort_by(|a, b| a.0.cmp(&b.0));
     let names: Vec<std::path::PathBuf> = got.iter().map(|(p, _)| std::path::PathBuf::from(p)).collect();
-    let expected = [format!("{dir}/a.gif"), format!("{dir}/seq_00.png"), format!("{dir}/seq_01.png"), format!("{dir}/seq_02.png")]
-        .map(|p| std::path::absolute(p).unwrap());
+    let expected = ["a.gif", "seq_00.png", "seq_01.png", "seq_02.png"].map(|p| dir.join(p));
     assert_eq!(names, expected);
     assert!(got[0].1.starts_with(b"GIF89a"));
     assert!(got[1].1.starts_with(b"\x89PNG"));
-    assert!(!std::path::Path::new(dir).exists());
+    assert!(!dir.exists());
 }
 
 #[test]
@@ -546,6 +579,8 @@ fn script_imports_footage_and_saves() {
     std::fs::create_dir_all(&dir).unwrap();
     let q = |n: &str| serde_json::to_string(&dir.join(n).to_string_lossy()).unwrap();
     let mut s = super::session();
+    // The script writes the still it then imports.
+    s.prefs.scripting.allow_scripts_write_files = true;
     let code = format!(
         r#"
             var c = app.project.items.addComp("Src", 32, 32, 1, 1, 10);

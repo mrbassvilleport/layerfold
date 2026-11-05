@@ -94,6 +94,12 @@ fn browser_favorite(s: &mut Session, p: &Value, add: bool) -> Result<Value> {
 
 fn browser_import(s: &mut Session, p: &Value) -> Result<Value> {
     let paths = p.get("paths").or(p.get("path")).cloned().ok_or_else(|| bad("mediaBrowser.import", "missing `paths`"))?;
+    if b_p(p, "addToComp").unwrap_or(false)
+        && let Some(comp) = s.active_comp()
+    {
+        // Reject a locked destination before fetching, decoding or adding Project items.
+        super::layer::insertion_index(comp, &s.state.selected_layers, super::layer::index_p(p, "mediaBrowser.import")?)?;
+    }
     // Files the browser still has to read (the web app's opened folders): imported when they
     // arrive.
     let list: Vec<String> = match &paths {

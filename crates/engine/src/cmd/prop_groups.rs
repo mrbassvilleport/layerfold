@@ -160,7 +160,8 @@ pub(crate) fn paste_masks(s: &mut Session, p: &Value) -> Result<Value> {
     let clip = s.state.mask_clipboard.clone();
     let (cid, ids) = layers_p(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
-    let targets: Vec<LayerId> = ids.into_iter().filter(|l| comp.layer(*l).is_some_and(|l| l.masks().is_some() && !l.switches.locked)).collect();
+    let targets: Vec<LayerId> =
+        ids.into_iter().filter(|id| comp.layer(*id).is_some_and(|l| l.masks().is_some()) && !comp.layer_effectively_locked(*id)).collect();
     if targets.is_empty() {
         return Err(bad(c, "select an unlocked layer that can have masks to paste masks into"));
     }
@@ -207,7 +208,7 @@ pub(crate) fn paste_contents(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let targets: Vec<LayerId> =
-        ids.into_iter().filter(|l| comp.layer(*l).is_some_and(|l| matches!(l.source, LayerSource::Shape) && !l.switches.locked)).collect();
+        ids.into_iter().filter(|l| comp.layer(*l).is_some_and(|l| matches!(l.source, LayerSource::Shape)) && !comp.layer_effectively_locked(*l)).collect();
     if targets.is_empty() {
         return Err(bad(c, "select a shape layer to paste shape items into"));
     }

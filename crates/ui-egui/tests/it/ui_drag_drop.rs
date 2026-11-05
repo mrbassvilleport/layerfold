@@ -108,6 +108,45 @@ fn project_items_land_where_they_are_dropped_in_the_timeline() {
     assert!((in_point(&h, 3) - 1.0).abs() < 1e-9, "Shift starts it at the current time");
 }
 
+#[test]
+fn project_drop_cannot_insert_inside_a_locked_group() {
+    for destination in ["inner interior", "before inner", "after inner"] {
+        let ancestor = destination != "inner interior";
+        let (mut h, clip) = harness();
+        let top = layer_id(&h, "Top");
+        let middle = layer_id(&h, "Middle");
+        let bottom = layer_id(&h, "Bottom");
+        let members = if ancestor { vec![middle] } else { vec![middle, bottom] };
+        let inner = h.state_mut().session.execute("layer.group", json!({"layers":members})).unwrap()["group"].as_u64().unwrap();
+        let locked = if ancestor {
+            h.state_mut().session.execute("layer.select", json!({"layers":[top]})).unwrap();
+            let outer = h.state_mut().session.execute("layer.group", json!({"layers":[top,middle,bottom]})).unwrap()["group"].as_u64().unwrap();
+            let comp = h.state().session.active_comp().unwrap();
+            let child = comp.layer_groups.iter().find(|g| g.id == inner).unwrap();
+            assert_eq!(child.members, [effectcraft_engine::project::LayerId(middle)]);
+            assert_eq!(child.parent, Some(outer));
+            assert!(!child.locked);
+            outer
+        } else {
+            inner
+        };
+        h.state_mut().session.execute("layer.groupUpdate", json!({"group":locked,"locked":true})).unwrap();
+        let before = h.state().session.project.to_file_json().unwrap();
+        let selection = h.state().session.state.selected_layers.clone();
+        let undo = h.state().session.history.undo.len();
+        h.run_steps(3);
+        let from = rect(&h, &format!("project.item.{clip}.name")).center();
+        let target = if destination == "before inner" { middle } else { bottom };
+        let row = rect(&h, &format!("timeline.layer.{target}.row"));
+        drag(&mut h, from, pos2(row.center().x, row.min.y + 2.0), Modifiers::NONE);
+        assert_eq!(stack(&h), ["Top", "Middle", "Bottom"], "{destination}");
+        assert!(h.state().ui.status.contains("locked"), "{}", h.state().ui.status);
+        assert_eq!(h.state().session.project.to_file_json().unwrap(), before);
+        assert_eq!(h.state().session.state.selected_layers, selection);
+        assert_eq!(h.state().session.history.undo.len(), undo);
+    }
+}
+
 /// Alt/Option-drag from the Project panel replaces the source of the layer under the pointer
 /// instead of adding a layer (#991).
 #[test]

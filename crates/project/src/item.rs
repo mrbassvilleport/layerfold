@@ -2,7 +2,7 @@ use super::comp::Comp;
 use super::footage::{Footage, FootageKind, Proxy, Solid};
 use super::layer::LayerSource;
 use super::settings::{APP_VERSION, ProjectError, ProjectSettings, SCHEMA_VERSION, SavedView};
-use super::{Arc, BTreeMap, Deserialize, FrameRate, Label, Project, Serialize, Tick, file_check, limits};
+use super::{Arc, BTreeMap, Deserialize, FrameRate, Label, MAX_GROUP_ID, Project, Serialize, Tick, file_check, limits};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ItemId(pub u64);
@@ -235,6 +235,11 @@ impl Project {
             // Saturating: a damaged file's ids must not overflow (the import then refuses it).
             m = m.max(id.0.saturating_add(1));
             if let ItemKind::Comp(c) = &it.kind {
+                for g in &c.layer_groups {
+                    if g.id < MAX_GROUP_ID {
+                        m = m.max(g.id.saturating_add(1));
+                    }
+                }
                 for l in &c.layers {
                     m = m.max(l.id.0.saturating_add(1)).max(l.props.max_uid().saturating_add(1));
                 }

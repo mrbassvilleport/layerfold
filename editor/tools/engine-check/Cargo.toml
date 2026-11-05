@@ -1,0 +1,17 @@
+[package]
+name = "engine-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Local integration check for the pinned EffectCraft source"
+
+[lints]
+workspace = true
+
+[dependencies]
+effectcraft-engine = { path = "../../../crates/engine" }
+effectcraft-host = { path = "../../../crates/host" }
+serde_json.workspace = true
+tempfile = "3"

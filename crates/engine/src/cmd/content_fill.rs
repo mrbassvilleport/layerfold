@@ -260,6 +260,7 @@ pub(crate) fn apply_plan(s: &mut Session, plan: &FillPlan, paths: Vec<String>) -
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "contentFill.generate";
     let (cid, lid) = layer_p(s, p, c)?;
+    super::group_unlocked(s, cid, vec![lid], c)?;
     // Parameters override the panel settings.
     let mut st = s.state.content_fill.clone();
     {
@@ -390,7 +391,13 @@ fn add_fill_layer(
         let id = l.id;
         let cm = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         let at = cm.layers.iter().position(|x| x.id == lid).unwrap_or(0);
+        // A folder locked while the fill rendered keeps its span and its layers.
+        if super::locked_by_group(cm, lid) {
+            return Err(bad("contentFill.generate", "the source layer's group was locked; unlock it and fill again"));
+        }
+        let at = super::layer::insertion_index(cm, &[], Some(at))?;
         cm.layers.insert(at, l);
+        super::edit::inherit_layer_groups(cm, lid, id);
         st.selected_layers = vec![id];
         Ok((lname, iid, id))
     })?;

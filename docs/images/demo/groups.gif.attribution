@@ -1,0 +1,8 @@
+asset:        groups.gif
+title:        Demo: layer groups
+author:       Layerfold contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT
+added:        2026-11-03 by Layerfold contributors (Claude agent, editor/scripts/demo/capture.py)
+notes:        Shows only Layerfold with synthetic clips made by editor/scripts/demo/footage.py and text set in the bundled Inter.

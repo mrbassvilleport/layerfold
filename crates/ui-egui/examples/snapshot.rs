@@ -104,6 +104,8 @@ fn main() {
         .with_pixels_per_point(args.scale)
         .wgpu()
         .build_eframe(move |_cc| EffectcraftApp::new(session).with_control(rx));
+    // A real window has no painted pointer either; the demos draw their own over these images.
+    harness.set_render_cursor(false);
     settle(&mut harness, args.settle);
     for step in &args.steps {
         let method = step["method"].as_str().unwrap_or_default().to_string();
@@ -118,18 +120,27 @@ fn main() {
         // {"method":"pointer","params":{"x":237,"y":12,"click":true}}
         if method == "pointer" {
             let pos = egui::pos2(params["x"].as_f64().unwrap_or(0.0) as f32, params["y"].as_f64().unwrap_or(0.0) as f32);
+            // A gesture split over steps, so a snapshot can catch it halfway:
+            // {"x":..,"y":..,"press":true,"button":"middle","alt":true,"settle":0.05}, then moves, then "release".
+            let modifiers =
+                egui::Modifiers { alt: params["alt"].as_bool() == Some(true), shift: params["shift"].as_bool() == Some(true), ..Default::default() };
+            let button = if params["button"].as_str() == Some("middle") { egui::PointerButton::Middle } else { egui::PointerButton::Primary };
+            harness.input_mut().events.push(egui::Event::ModifiersChanged(modifiers));
             harness.input_mut().events.push(egui::Event::PointerMoved(pos));
-            if params["click"].as_bool() == Some(true) {
-                for pressed in [true, false] {
-                    harness.input_mut().events.push(egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    });
-                }
+            let flag = |name: &str| params[name].as_bool() == Some(true);
+            let presses: &[bool] = if flag("click") {
+                &[true, false]
+            } else if flag("press") {
+                &[true]
+            } else if flag("release") {
+                &[false]
+            } else {
+                &[]
+            };
+            for &pressed in presses {
+                harness.input_mut().events.push(egui::Event::PointerButton { pos, button, pressed, modifiers });
             }
-            settle(&mut harness, 0.3);
+            settle(&mut harness, params["settle"].as_f64().unwrap_or(0.3));
             println!("{}", json!({"method": method, "reply": {"ok": true}}));
             continue;
         }

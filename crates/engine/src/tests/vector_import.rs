@@ -74,6 +74,43 @@ pub(crate) fn sample_psd() -> Vec<u8> {
     write(&d)
 }
 
+#[test]
+fn convert_to_editable_text_keeps_the_layer_in_its_folder() {
+    let path = tmp("sample-editable.psd");
+    std::fs::write(&path, sample_psd()).unwrap();
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Main", "width": 120, "height": 80, "duration": 2})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    // Footage of one Photoshop layer, as File ▸ Import ▸ Choose Layer makes it.
+    let psd = effectcraft_psd::Psd::parse(sample_psd()).unwrap();
+    let index = psd.layers.iter().position(|l| l.text.is_some()).unwrap();
+    let item = s
+        .edit("import", None, |p, _| {
+            let f = effectcraft_project::Footage {
+                path: path.clone(),
+                kind: effectcraft_project::FootageKind::Still,
+                width: 120,
+                height: 80,
+                has_video: true,
+                codec: "PSD".into(),
+                layer: Some(effectcraft_project::SourceLayer { index: index as u32, name: "Title".into(), layer_size: false, embedded: None, placed: false }),
+                ..Default::default()
+            };
+            Ok(p.add_item("Title", effectcraft_color::Label::Aqua, None, ItemKind::Footage(f)))
+        })
+        .unwrap();
+    let r = s.execute_checked("layer.addItem", json!({"comp": cid.0, "item": item.0})).unwrap();
+    let lid = effectcraft_project::LayerId(r["layer"].as_u64().unwrap());
+    let group = s.execute("layer.group", json!({"layers": [lid.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+    let r = s.execute_checked("layer.create", json!({"op": "editableText", "layers": [lid.0]})).unwrap();
+    assert_eq!(r["layers"], json!([lid.0]), "same layer id");
+    let c = s.project.comp(cid).unwrap();
+    assert!(matches!(c.layer(lid).unwrap().source, LayerSource::Text));
+    assert_eq!(c.layer_group(lid).map(|g| g.id), Some(group));
+    assert!(!c.layer_effectively_visible(lid));
+}
+
 /// Text layer: editable text, positioned at the type origin.
 fn assert_title_layer(title: &Layer) {
     assert!(matches!(title.source, LayerSource::Text));

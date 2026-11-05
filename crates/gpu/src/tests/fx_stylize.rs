@@ -46,6 +46,33 @@ fn posterize_thresholds_strobe_vignette() {
     effect_case("ec.stylize.ccvignette", &[("amount", n(-60.0)), ("pinHighlights", n(50.0)), ("angleOfView", n(120.0)), ("center", pt(20.0, 15.0))]);
 }
 
+/// Small changes around a half-step must not choose different posterization bands. Enumerate
+/// premultiplied 8-bit colours/alpha, the input used by an 8 bpc composition before its effects.
+#[test]
+fn posterize_quantized_half_steps_match_cpu() {
+    use effectcraft_effects::{Buf, EffectCtx, Params};
+    use effectcraft_raster::Image;
+    use effectcraft_render::{Accelerator, FxStep};
+    let Some(g) = crate::tests::gpu() else { return };
+    let spec = effectcraft_effects::find("ec.stylize.posterize").unwrap();
+    let mut img = Image::new(256, 256);
+    let inv = 1.0f32 / 255.0;
+    for (i, px) in img.data.iter_mut().enumerate() {
+        let a = (i / 256) as f32;
+        let c = (i % 256) as f32;
+        *px = [c.min(a) * inv, 0.0, 0.0, a * inv];
+    }
+    let buf = Buf { img, offset: [0.0, 0.0], scale: 1.0 };
+    for level in [4.0, 9.0] {
+        let params = Params { values: [("level".to_string(), n(level))].into() };
+        let ctx = || EffectCtx { params: &params, time: 0.0, layer_size: [256.0, 256.0], seed: 0, adjustment: false, env: Default::default() };
+        let cpu = (spec.render)(&ctx(), buf.clone());
+        let out = g.effects(&[FxStep { spec, ctx: ctx() }], &buf, None).expect("the GPU runs posterize");
+        let d = crate::tests::diff(&cpu.img, &out.img, 1e-6);
+        assert_eq!(d.over, 0, "level {level}: {d:?}");
+    }
+}
+
 #[test]
 fn scatter_brush_strokes() {
     effect_case("ec.stylize.scatter", &[("amount", n(5.0))]);

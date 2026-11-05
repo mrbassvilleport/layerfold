@@ -75,6 +75,8 @@ fn trace_frame(img: &Image, offset: [f64; 2], ch: Channel, invert: bool, blur: f
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "layer.autoTrace";
     let (cid, lid) = layer_p(s, p, c)?;
+    // The traced layer goes above the source, inside the source's folder.
+    super::group_unlocked(s, cid, vec![lid], c)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?.clone();
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?.clone();
     if !layer.source.is_av() {
@@ -153,6 +155,7 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let cm = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
             let at = cm.layers.iter().position(|x| x.id == lid).unwrap_or(0);
             cm.layers.insert(at, l);
+            super::edit::inherit_layer_groups(cm, lid, id);
             id
         } else {
             lid

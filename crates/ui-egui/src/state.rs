@@ -372,6 +372,10 @@ pub enum ScrollTo {
     Property(u64),
 }
 
+fn layer_frames_default() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimelineState {
     /// Visible span start (seconds) and pixels per second; None = fit comp.
@@ -387,6 +391,9 @@ pub struct TimelineState {
     #[serde(default)]
     pub outline_scroll: f32,
     pub show_modes: bool,
+    /// Video frames on footage layer bars (`timeline.layerFrames`).
+    #[serde(default = "layer_frames_default")]
+    pub layer_frames: bool,
     pub graph_editor: bool,
     pub search: String,
     /// Twirled-open layers and groups (by layer id / group uid).
@@ -480,6 +487,7 @@ impl Default for TimelineState {
             columns_w: 560.0,
             outline_scroll: 0.0,
             show_modes: false,
+            layer_frames: true,
             graph_editor: false,
             search: String::new(),
             open_layers: BTreeSet::new(),

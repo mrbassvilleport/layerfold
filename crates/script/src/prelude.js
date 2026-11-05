@@ -1152,7 +1152,7 @@ Layer.prototype = {
   set audioEnabled(v) { this.__switch("audio", v); },
   get hasVideo() { return this.__info().hasVideo; },
   get hasAudio() { return this.__info().hasAudio; },
-  get audioActive() { var i = this.__info(); return i.hasAudio && i.audioEnabled; },
+  get audioActive() { var i = this.__info(); return i.hasAudio && i.audible; },
   get nullLayer() { return this.__info().nullLayer; },
   get isNameSet() { return true; },
   get inPoint() { return this.__info().inPoint; },
@@ -1229,7 +1229,7 @@ Layer.prototype = {
     var me = this.index, to = other.index;
     __call("layer.arrange", this.__p({ to: "index", index: me < to ? to : to + 1 }));
   },
-  activeAtTime: function (t) { var i = this.__info(); return i.enabled && t >= i.inPoint && t < i.outPoint; },
+  activeAtTime: function (t) { var i = this.__info(); return i.visible && t >= i.inPoint && t < i.outPoint; },
   applyPreset: function (f) { __call("anim.applyPreset", this.__p({ path: __str(f) })); },
 };
 

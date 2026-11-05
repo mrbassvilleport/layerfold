@@ -1,7 +1,7 @@
 //! Render-fidelity commands: project colour settings, footage colour profile, slip edit.
 
 use effectcraft_project::{BitDepth, ColorSpace};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::Session;
 
@@ -42,6 +42,108 @@ fn footage_colour_profile_is_interpreted() {
     assert_eq!(profile(&s), None);
     assert!(s.undo());
     assert_eq!(profile(&s), Some(ColorSpace::Rec2020));
+}
+
+/// A 10 s comp with a 4 s nested comp shown 1 s .. 3 s into its span, and a scale key in the middle.
+fn slip_scene(timing: Option<(&str, Value)>) -> (Session, u64) {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Main", "width": 100, "height": 100, "frameRate": 30, "duration": 10})).unwrap();
+    let nested = s.execute("comp.new", json!({"name": "Nested", "duration": 4, "open": false})).unwrap()["comp"].as_u64().unwrap();
+    s.execute("layer.addItem", json!({"item": nested})).unwrap();
+    let id = s.active_comp().unwrap().layers[0].id.0;
+    if let Some((command, params)) = timing {
+        s.execute(command, params).unwrap();
+    }
+    let l = s.active_comp().unwrap().layers[0].clone();
+    let lo = l.source_span(&s.project, s.active_comp().unwrap().frame_duration()).unwrap().0.seconds();
+    s.execute("layer.timing", json!({"layers": [id], "in": lo + 1.0, "out": lo + 3.0})).unwrap();
+    s.execute("time.set", json!({"time": lo + 2.0})).unwrap();
+    s.execute("prop.addKey", json!({"layer": id, "path": "transform/scale", "value": [50.0, 50.0]})).unwrap();
+    (s, id)
+}
+
+/// The comp time of the layer's only scale key.
+fn scale_key_at(s: &Session, id: u64) -> f64 {
+    let l = s.active_comp().unwrap().layer(effectcraft_project::LayerId(id)).unwrap().clone();
+    let keys = &l.props.sub("transform").unwrap().get("scale").unwrap().keys;
+    assert_eq!(keys.len(), 1);
+    l.comp_time(keys[0].time).seconds()
+}
+
+#[test]
+fn slip_with_hold_keys_leaves_keyframes_in_place_in_the_comp() {
+    for (case, timing) in
+        [("as is", None), ("stretched", Some(("layer.timeStretch", json!({"percent": 200})))), ("reversed", Some(("layer.timeReverse", json!({}))))]
+    {
+        let (mut s, id) = slip_scene(timing);
+        let before = scale_key_at(&s, id);
+        s.execute("layer.slip", json!({"layers": [id], "delta": 0.5, "holdKeys": true})).unwrap();
+        assert!((scale_key_at(&s, id) - before).abs() < 1e-6, "{case}");
+        // Without the option the key travels with the source, as in After Effects.
+        s.execute("layer.slip", json!({"layers": [id], "delta": -0.5})).unwrap();
+        assert!((scale_key_at(&s, id) - (before - 0.5)).abs() < 1e-6, "{case}");
+    }
+    // One undo step puts the key's layer time back with the source.
+    let (mut s, id) = slip_scene(None);
+    let l0 = s.active_comp().unwrap().layers[0].clone();
+    s.execute("layer.slip", json!({"layers": [id], "delta": 0.5, "holdKeys": true})).unwrap();
+    assert!(s.undo());
+    let l1 = s.active_comp().unwrap().layers[0].clone();
+    assert_eq!(l0.start_time, l1.start_time);
+    assert_eq!(l0.props.sub("transform").unwrap().get("scale").unwrap().keys[0].time, l1.props.sub("transform").unwrap().get("scale").unwrap().keys[0].time);
+}
+
+/// Played backwards, the source's first frame is the layer's last, and no frame past its end shows.
+#[test]
+fn trim_to_source_of_a_reversed_layer_shows_only_source_frames() {
+    let (mut s, id) = slip_scene(Some(("layer.timeReverse", json!({}))));
+    s.execute("layer.trimToSource", json!({"layers": [id]})).unwrap();
+    let c = s.active_comp().unwrap().clone();
+    let l = c.layers[0].clone();
+    let frame = c.frame_duration();
+    assert_eq!(l.layer_time(l.out_point - frame).seconds(), 0.0, "ends on the source's first frame");
+    assert!((l.layer_time(l.in_point).seconds() - (4.0 - 1.0 / 30.0)).abs() < 1e-6, "starts on the source's last frame");
+}
+
+/// A Write On stroke's visible span is fixed in layer time: its keys stay with it and the picture.
+#[test]
+fn slip_with_hold_keys_leaves_paint_on_the_source() {
+    let (mut s, id) = slip_scene(None);
+    s.execute("paint.stroke", json!({"layer": id, "points": [[10.0, 10.0], [20.0, 20.0]], "time": 2.0, "duration": 0.5, "durationMode": "writeOn"})).unwrap();
+    let paint_keys = |s: &Session| {
+        let l = s.active_comp().unwrap().layers[0].clone();
+        let mut keys = vec![];
+        l.props.sub("effects").unwrap().walk("", &mut |_, p| keys.extend(p.keys.iter().map(|k| k.time)));
+        keys
+    };
+    let before = paint_keys(&s);
+    assert!(!before.is_empty(), "the stroke has Write On keys");
+    let scale = scale_key_at(&s, id);
+    // A selected paint key stays selected: its reference holds the same time as the key.
+    let mut paint_prop = None;
+    s.active_comp().unwrap().layers[0].props.sub("effects").unwrap().walk("", &mut |_, p| {
+        if !p.keys.is_empty() {
+            paint_prop = Some((p.uid, p.keys[0].time));
+        }
+    });
+    let (prop, time) = paint_prop.unwrap();
+    s.state.selected_keys.push(crate::doc_state::KeyRef { layer: effectcraft_project::LayerId(id), prop, time });
+    s.execute("layer.slip", json!({"layers": [id], "delta": 0.5, "holdKeys": true})).unwrap();
+    assert_eq!(paint_keys(&s), before, "paint keys travel with the source");
+    assert_eq!(s.state.selected_keys[0].time, time, "the selection follows the key");
+    assert!((scale_key_at(&s, id) - scale).abs() < 1e-6, "the scale key holds in the comp");
+}
+
+#[test]
+fn trim_to_source_covers_the_whole_source() {
+    let (mut s, id) = slip_scene(None);
+    s.execute("layer.slip", json!({"layers": [id], "delta": 0.5})).unwrap();
+    s.execute("layer.trimToSource", json!({"layers": [id]})).unwrap();
+    let l = s.active_comp().unwrap().layers[0].clone();
+    assert_eq!((l.in_point.seconds(), l.out_point.seconds(), l.start_time.seconds()), (0.5, 4.5, 0.5));
+    // No source of its own: refused, nothing changes.
+    s.execute("layer.newSolid", json!({"color": "#ff0000"})).unwrap();
+    assert!(s.execute("layer.trimToSource", json!({})).is_err());
 }
 
 #[test]

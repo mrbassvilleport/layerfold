@@ -91,12 +91,18 @@ impl StoredPaths {
     pub(crate) fn add(&mut self, p: &Project, document: Option<&str>) {
         let map = Arc::make_mut(&mut self.0);
         for item in p.items.values() {
-            if let ItemKind::Footage(f) = &item.kind {
+            let own = if let ItemKind::Footage(f) = &item.kind { Some(f) } else { None };
+            for f in own.into_iter().chain(item.proxy.as_ref().map(|px| &px.footage)) {
                 for q in paths_of(f) {
                     map.entry(q.clone()).or_insert_with(|| document.map(str::to_string));
                 }
             }
         }
+    }
+
+    /// Record one path that came from the document at `document`, not chosen in this session.
+    pub(crate) fn add_path(&mut self, path: &str, document: Option<&str>) {
+        Arc::make_mut(&mut self.0).entry(path.to_string()).or_insert_with(|| document.map(str::to_string));
     }
 
     /// The user chose the files of `f` in this session (import, relink, Replace Footage): follow
@@ -136,15 +142,20 @@ impl StoredPaths {
 pub(crate) fn resolve_footage(p: &mut Project, project: Option<&str>) -> Vec<(ItemId, String, NotFollowed)> {
     let mut refused = vec![];
     for item in p.items.values_mut() {
-        let ItemKind::Footage(f) = &mut item.kind else { continue };
-        match footage_paths(f, project) {
-            Ok((path, sequence)) => {
-                f.path = path;
-                f.sequence = sequence;
-            }
-            Err((path, why)) => {
-                f.missing = true;
-                refused.push((item.id, path, why));
+        let id = item.id;
+        // A proxy (of footage or of a composition) is read instead of its item, so it is held to
+        // the same rule.
+        let own = if let ItemKind::Footage(f) = &mut item.kind { Some(f) } else { None };
+        for f in own.into_iter().chain(item.proxy.as_mut().map(|px| &mut px.footage)) {
+            match footage_paths(f, project) {
+                Ok((path, sequence)) => {
+                    f.path = path;
+                    f.sequence = sequence;
+                }
+                Err((path, why)) => {
+                    f.missing = true;
+                    refused.push((id, path, why));
+                }
             }
         }
     }

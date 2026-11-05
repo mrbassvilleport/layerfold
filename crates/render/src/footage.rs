@@ -81,6 +81,12 @@ pub trait FootageSource: Send + Sync {
     fn cancellable(&self, _cancel: &Arc<AtomicBool>, f: &mut dyn FnMut()) {
         f()
     }
+    /// Run `f`, which reads frames from this source, as work nobody waits on (thumbnails): it
+    /// keeps no expensive decoder state for it, and what fails doesn't count as a problem of the
+    /// file ([`Self::problem`]). Sources without such state just run `f`.
+    fn background(&self, f: &mut dyn FnMut()) {
+        f()
+    }
     /// Reads through this source have been called off: frames may have come back `None` that
     /// exist, so what was made from them must not be kept.
     fn called_off(&self) -> bool {
@@ -163,6 +169,9 @@ impl FootageSource for CancellableFootage<'_> {
     }
     fn cancellable(&self, cancel: &Arc<AtomicBool>, f: &mut dyn FnMut()) {
         self.inner.cancellable(cancel, f)
+    }
+    fn background(&self, f: &mut dyn FnMut()) {
+        self.inner.background(f)
     }
     fn called_off(&self) -> bool {
         self.cancel.load(Ordering::Relaxed) || self.inner.called_off()

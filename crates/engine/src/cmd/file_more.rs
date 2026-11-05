@@ -328,6 +328,13 @@ fn consolidate(s: &mut Session, _: &Value) -> Result<Value> {
 fn reduce(s: &mut Session, _: &Value) -> Result<Value> {
     let roots: Vec<ItemId> = s.state.project_selection.iter().copied().filter(|i| s.project.comp(*i).is_some()).collect();
     let keep = used_items(&s.project, &roots);
+    let doomed: Vec<ItemId> = s.project.comps().map(|(id, _)| *id).filter(|id| !keep.contains(id)).collect();
+    if let Some(l) = super::locked_reader_of_comps(&s.project, &doomed) {
+        return Err(super::bad(
+            "file.reduceProject",
+            format!("“{}” in a locked layer group reads a composition Reduce Project would remove; unlock the group first", l.name),
+        ));
+    }
     let n = s.edit("Reduce Project", None, |proj, _| {
         let before = proj.items.len();
         proj.items.retain(|id, _| keep.contains(id));

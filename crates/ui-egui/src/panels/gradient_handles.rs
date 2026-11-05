@@ -58,7 +58,10 @@ pub fn viewer_hook(
     let selected_props = app.session.state.selected_props.clone();
     let selected_layers = app.session.state.selected_layers.clone();
     let mut actions: Vec<(String, serde_json::Value)> = vec![];
-    for layer in ectx.comp.layers.iter().filter(|l| selected_layers.contains(&l.id) && l.is_active_at(ectx.time)) {
+    // Same scope as the layer's own box: none on locked layers, including by folder.
+    for layer in
+        ectx.comp.layers.iter().filter(|l| selected_layers.contains(&l.id) && l.is_active_at(ectx.time) && super::viewer::viewer_editable(ectx.comp, l))
+    {
         let Some(contents) = layer.props.sub("contents") else { continue };
         let mut paints = vec![];
         gradient_paints(contents, 0, &mut paints);

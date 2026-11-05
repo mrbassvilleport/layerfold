@@ -1,0 +1,8 @@
+asset:        layerfold-main.png
+title:        Layerfold main window
+author:       Layerfold contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT
+added:        2026-11-03 by Layerfold contributors (Claude agent, snapshot example)
+notes:        Shows only Layerfold with its generated demo project, three layers in a group named Rings. Made with crates/ui-egui/examples/snapshot.rs.

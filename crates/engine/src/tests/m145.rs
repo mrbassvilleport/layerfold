@@ -536,6 +536,26 @@ fn compatibility_report_and_logging() {
 // ---------------------------------------------------------------- VR
 
 #[test]
+fn vr_environment_leaves_out_lights_of_a_hidden_folder() {
+    let mut s = session();
+    let lit = s.execute("layer.newLight", json!({"name": "Lit"})).unwrap()["layer"].as_u64().unwrap();
+    let off = s.execute("layer.newLight", json!({"name": "Off"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setParent", json!({"layers": [lit], "parent": off})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [off]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+    let r = s.execute("comp.vr.createEnvironment", json!({"size": 64})).unwrap();
+    for f in r["faces"].as_array().unwrap() {
+        let c = s.project.comp(ItemId(f.as_u64().unwrap())).unwrap();
+        let lights: Vec<&effectcraft_project::Layer> = c.layers.iter().filter(|l| l.is_light()).collect();
+        let on: Vec<&str> = lights.iter().filter(|l| l.switches.video).map(|l| l.name.as_str()).collect();
+        assert_eq!(on, vec!["Lit"], "only the visible light lights the faces");
+        let parent = lights.iter().find(|l| l.name == "Off").expect("the hidden light stays as a parent");
+        assert_eq!(lights.iter().find(|l| l.name == "Lit").unwrap().parent, Some(parent.id));
+    }
+    let _ = lit;
+}
+
+#[test]
 fn create_vr_environment_and_extract_cubemap() {
     let mut s = session();
     let main = s.active_comp_id().unwrap();

@@ -170,17 +170,38 @@ pub(crate) fn layers_or(s: &Session, p: &Value, fallback: &[LayerId]) -> Result<
 /// Whether a layer can be picked by the user (Select All, Ctrl+Up/Down, a Timeline click): not
 /// locked, and not hidden by the composition's Hide Shy Layers.
 pub(crate) fn selectable(comp: &Comp, l: &Layer) -> bool {
-    !(l.switches.locked || (comp.hide_shy && l.switches.shy))
+    !(comp.layer_effectively_locked(l.id) || (comp.hide_shy && l.switches.shy))
+}
+
+/// The inherited folder lock is separate from the leaf's historical lock policy.
+pub(crate) fn locked_by_group(comp: &Comp, layer: LayerId) -> bool {
+    comp.layer_groups.iter().any(|g| g.locked && g.members.contains(&layer))
+}
+
+/// Commands that historically allow a leaf's own lock (including scripting) still
+/// respect the new folder lock, without changing their existing leaf-lock policy.
+pub(crate) fn group_unlocked(s: &Session, cid: ItemId, ids: Vec<LayerId>, cmd: &str) -> Result<Vec<LayerId>> {
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let was_empty = ids.is_empty();
+    let ids: Vec<_> = ids.into_iter().filter(|id| !locked_by_group(comp, *id)).collect();
+    if !was_empty && ids.is_empty() {
+        return Err(bad(cmd, "unlock the parent layer group in the Timeline"));
+    }
+    Ok(ids)
 }
 
 /// The layers of `ids` a command may edit: locked layers are left alone, as in After Effects.
-/// An error when every one of them is locked.
+/// An error when every one of them is locked. Existing commands that already respected the leaf
+/// lock also respect folder locks.
 pub(crate) fn unlocked(s: &Session, cid: ItemId, ids: Vec<LayerId>, cmd: &str) -> Result<Vec<LayerId>> {
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
-    let locked = |id: &LayerId| comp.layer(*id).is_some_and(|l| l.switches.locked);
+    let locked = |id: &LayerId| comp.layer_effectively_locked(*id);
     match ids.iter().find(|id| locked(id)) {
         Some(first) if ids.iter().all(locked) => {
             let name = comp.layer(*first).map(|l| l.name.clone()).unwrap_or_default();
+            if comp.layer_group_path(*first).iter().any(|g| g.locked) {
+                return Err(bad(cmd, format!("“{name}” is locked by a layer group; unlock the parent group in the Timeline")));
+            }
             Err(bad(cmd, format!("“{name}” is locked (Layer ▸ Switches ▸ Unlock All Layers)")))
         }
         _ => Ok(ids.into_iter().filter(|id| !locked(id)).collect()),
@@ -206,5 +227,9 @@ pub(crate) fn time_p(s: &Session, p: &Value, comp: Option<&Comp>) -> Tick {
 }
 
 pub(crate) fn layer_mut(p: &mut effectcraft_project::Project, cid: ItemId, lid: LayerId) -> Result<&mut Layer> {
-    p.comp_mut(cid).ok_or(EngineError::NoComp)?.layer_mut(lid).ok_or(EngineError::Project(effectcraft_project::ProjectError::NoLayer(lid)))
+    let comp = p.comp_mut(cid).ok_or(EngineError::NoComp)?;
+    if locked_by_group(comp, lid) {
+        return Err(bad("layer", "the layer belongs to a locked group"));
+    }
+    comp.layer_mut(lid).ok_or(EngineError::Project(effectcraft_project::ProjectError::NoLayer(lid)))
 }

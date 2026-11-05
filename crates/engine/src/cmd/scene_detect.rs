@@ -81,6 +81,8 @@ pub(crate) fn analyse(
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "layer.sceneEditDetection";
     let (cid, lid) = layer_p(s, p, c)?;
+    // Splitting trims the layer and inserts the pieces in its folder, as `edit.split` does.
+    super::group_unlocked(s, cid, vec![lid], c)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
     if layer.source.item().is_none() {
@@ -110,6 +112,7 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn apply(s: &mut Session, cid: ItemId, lid: LayerId, mode: Mode, cuts: &[Tick]) -> Result<Value> {
+    super::group_unlocked(s, cid, vec![lid], "layer.sceneEditDetection")?;
     let secs: Vec<f64> = cuts.iter().map(|t| t.seconds()).collect();
     if cuts.is_empty() {
         return Ok(json!({"cuts": secs, "layers": [lid.0]}));
@@ -127,7 +130,22 @@ fn apply(s: &mut Session, cid: ItemId, lid: LayerId, mode: Mode, cuts: &[Tick]) 
         })?;
         return Ok(json!({"cuts": secs, "layers": [lid.0]}));
     }
-    let snap = s.project.clone();
+    if mode == Mode::SplitPrecompose
+        && let Some(l) = super::locked_dependant(&s.project, cid, &[lid])
+    {
+        return Err(bad("layer.sceneEditDetection", format!("“{}” in a locked layer group uses this layer; unlock the group in the Timeline", l.name)));
+    }
+    // Split and Precompose is one undo step that rolls back whole, whatever the undo levels.
+    let out = if mode == Mode::SplitPrecompose {
+        super::app_more::grouped(s, "Scene Edit Detection", |s| split(s, cid, lid, mode, cuts))?
+    } else {
+        split(s, cid, lid, mode, cuts)?
+    };
+    Ok(json!({"cuts": secs, "layers": out.iter().map(|l| l.0).collect::<Vec<_>>()}))
+}
+
+/// Split Layers (and Precompose each piece) from the source layer at the cuts.
+fn split(s: &mut Session, cid: ItemId, lid: LayerId, mode: Mode, cuts: &[Tick]) -> Result<Vec<LayerId>> {
     // Split from the source layer: each piece ends at the next cut (pieces stacked like Split
     // Layer: later pieces above).
     let pieces = s.edit("Scene Edit Detection", None, |proj, st| {
@@ -145,8 +163,10 @@ fn apply(s: &mut Session, cid: ItemId, lid: LayerId, mode: Mode, cuts: &[Tick]) 
             super::edit::reid(&mut b, &mut next);
             b.in_point = *t;
             l.out_point = *t;
-            ids.push(b.id);
+            let (src, copy) = (l.id, b.id);
+            ids.push(copy);
             cm.layers.insert(cur, b);
+            super::edit::inherit_layer_groups(cm, src, copy);
         }
         proj.next_id = next;
         st.selected_layers = ids.clone();
@@ -164,9 +184,8 @@ fn apply(s: &mut Session, cid: ItemId, lid: LayerId, mode: Mode, cuts: &[Tick]) 
             let new = r.get("layer").and_then(Value::as_u64).map(LayerId).unwrap_or(*id);
             out.push(new);
         }
-        s.collapse_undo("Scene Edit Detection", &snap);
     }
-    Ok(json!({"cuts": secs, "layers": out.iter().map(|l| l.0).collect::<Vec<_>>()}))
+    Ok(out)
 }
 
 pub fn specs() -> Vec<CommandSpec> {

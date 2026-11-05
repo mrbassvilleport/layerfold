@@ -1,4 +1,4 @@
-use super::geometry::{cam_state, l2c, parent_inverse};
+use super::geometry::{cam_state, l2c, parent_inverse, viewer_editable};
 use super::gesture::{Gesture, pen_id};
 use super::{CameraState, Color32, EffectcraftApp, EvalCtx, Layer, LayerId, Mat3, Pos2, Rect, Stroke, Tool, ViewerMap, gv2, json, ov, three_d, vec2, vt};
 
@@ -74,7 +74,7 @@ pub(super) fn draw_rigs(
             painter.line_segment([x, y], stroke);
         }
     };
-    for l in ectx.comp.layers.iter().filter(|l| (l.is_camera() || l.is_light()) && l.is_active_at(ectx.time)) {
+    for l in ectx.comp.layers.iter().filter(|l| (l.is_camera() || l.is_light()) && l.is_active_at(ectx.time) && ectx.comp.layer_effectively_visible(l.id)) {
         let sel = selected.contains(&l.id);
         let col = app.tokens.label(l.label).gamma_multiply(if sel { 1.0 } else { 0.6 });
         let stroke = Stroke::new(if sel { 1.5 } else { 1.0 }, col);
@@ -254,7 +254,7 @@ pub(super) fn pen_press(
         .selected_layers
         .iter()
         .copied()
-        .find(|id| ectx.comp.layer(*id).is_some_and(|l| !l.switches.locked && (l.masks().is_some() || matches!(l.source, LayerSource::Shape))));
+        .find(|id| ectx.comp.layer(*id).is_some_and(|l| viewer_editable(ectx.comp, l) && (l.masks().is_some() || matches!(l.source, LayerSource::Shape))));
     let layer = target.and_then(|id| ectx.comp.layer(id));
     let (lid, uid, inv) = match layer {
         Some(l) if !matches!(l.source, LayerSource::Shape) || app.session.state.shape_tool.creates_mask => {

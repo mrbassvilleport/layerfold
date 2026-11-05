@@ -1,4 +1,4 @@
-use super::geometry::{l2c, layer_quad, point_in_quad};
+use super::geometry::{l2c, layer_quad, point_in_quad, viewer_editable};
 use super::{
     Color32, Comp, EffectcraftApp, EvalCtx, Layer, LayerId, LayerSource, Mat3, PaintKind, Pos2, Rect, Stroke, Tick, Tokens, Tool, ViewerMap, gv2, json, ov,
     pos2,
@@ -7,14 +7,18 @@ use super::{
 /// Visible layers eligible for viewer hit tests, locked or not, in front-to-back order.
 /// Solo scope matches the renderer: any soloed AV layer activates it at every time (as in After
 /// Effects), even when hidden, locked or outside its in-out range.
+/// Solo scope matches the renderer at every time, including outside a soloed layer's in-out range.
+/// A folder's disabled video gate excludes its descendants from solo scope.
 fn hit_testable_layers(comp: &Comp, time: Tick) -> impl Iterator<Item = &Layer> {
-    let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av());
-    comp.layers.iter().filter(move |l| l.is_active_at(time) && l.switches.video && !l.is_camera() && !l.is_light() && (!any_solo || l.switches.solo))
+    let any_solo = comp.any_solo();
+    comp.layers
+        .iter()
+        .filter(move |l| l.is_active_at(time) && comp.layer_effectively_visible(l.id) && !l.is_camera() && !l.is_light() && (!any_solo || l.switches.solo))
 }
 
 /// Visible, unlocked layers eligible for viewer hit tests, in front-to-back order.
 pub(crate) fn selectable_layers(comp: &Comp, time: Tick) -> impl Iterator<Item = &Layer> {
-    hit_testable_layers(comp, time).filter(|l| !l.switches.locked)
+    hit_testable_layers(comp, time).filter(move |l| !comp.layer_effectively_locked(l.id))
 }
 
 /// Selectable layers under a comp point, front to back.
@@ -109,7 +113,7 @@ fn shape_kind(tool: Tool) -> &'static str {
 pub(super) fn shape_drag(app: &EffectcraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<ShapeDrag> {
     let comp = app.session.active_comp()?;
     let selected = app.session.state.selected_layers.first().copied();
-    let sel = selected.and_then(|id| comp.layer(id));
+    let sel = selected.and_then(|id| comp.layer(id)).filter(|l| viewer_editable(comp, l));
     // A footage, solid or other non-shape layer selected, or a shape layer with Tool Creates
     // Mask: a mask on that layer. Otherwise the engine's own target: the first selected unlocked
     // shape layer, else a new one.

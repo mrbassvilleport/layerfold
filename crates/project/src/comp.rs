@@ -1,3 +1,4 @@
+use super::LayerGroup;
 use super::item::LayerId;
 use super::layer::{Layer, LayerSource};
 use super::settings::{Marker, yes};
@@ -89,6 +90,9 @@ pub struct Comp {
     pub work_area: (Tick, Tick),
     /// Layer #1 first (top of the stack). Each layer is shared between undo states until edited.
     pub layers: super::Layers,
+    /// Organizational folders; they do not create a rendering/compositing boundary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layer_groups: Vec<LayerGroup>,
     #[serde(default)]
     pub markers: Vec<Marker>,
     pub shutter_angle: f64,
@@ -189,6 +193,7 @@ impl Comp {
             background: [0.0, 0.0, 0.0],
             work_area: (Tick::ZERO, duration),
             layers: super::Layers::new(),
+            layer_groups: vec![],
             markers: vec![],
             shutter_angle: 180.0,
             shutter_phase: -90.0,
@@ -262,7 +267,7 @@ impl Comp {
 
     /// The active camera at `t`: the topmost enabled camera layer active at that time.
     pub fn active_camera(&self, t: Tick) -> Option<&Layer> {
-        self.layers.iter().find(|l| matches!(l.source, LayerSource::Camera) && l.switches.video && l.is_active_at(t))
+        self.layers.iter().find(|l| matches!(l.source, LayerSource::Camera) && l.switches.video && self.layer_group_video_enabled(l.id) && l.is_active_at(t))
     }
 
     /// Unique layer name with a numeric suffix (`Shape Layer 2`).
@@ -300,6 +305,8 @@ impl Comp {
         self.same_settings(o, with_markers)
             && self.layers.len() == o.layers.len()
             && self.layers.iter().zip(&o.layers).all(|(a, b)| a.same_pixels_with(b, with_markers))
+            // A group's Video switch hides its members without touching their own switches.
+            && self.layers.iter().all(|l| self.layer_group_video_enabled(l.id) == o.layer_group_video_enabled(l.id))
     }
 
     /// [`Self::same_pixels_with`] but for the layers.
@@ -321,6 +328,7 @@ impl Comp {
             motion_blur_samples,
             motion_blur_adaptive_limit,
             renderer,
+            layer_groups: _,
             hide_shy: _,
             enable_motion_blur,
             enable_frame_blending,
@@ -387,7 +395,8 @@ impl Comp {
         let mut span: Option<(Tick, Tick)> = None;
         // Each changed layer comes up from both sides: its old and its new span.
         for (l, other) in self.layers.iter().map(|l| (l, o.layer(l.id))).chain(o.layers.iter().map(|l| (l, self.layer(l.id)))) {
-            if other.is_some_and(|b| l.same_pixels(b)) {
+            // A layer whose group Video changed draws differently though its own fields match.
+            if other.is_some_and(|b| l.same_pixels(b)) && self.layer_group_video_enabled(l.id) == o.layer_group_video_enabled(l.id) {
                 continue;
             }
             changed.push(l.id);
@@ -410,6 +419,7 @@ impl Comp {
 
     /// Some layer is soloed: only the soloed layers draw.
     pub fn any_solo(&self) -> bool {
+        // A Solo inside a group whose Video is off still counts, like a Solo with the layer's own Video off.
         self.layers.iter().any(|l| l.switches.solo && l.source.is_av())
     }
 
@@ -422,7 +432,8 @@ impl Comp {
     /// [`Self::pixel_form`], also without the comp's plain markers and its layers' markers when not
     /// `with_markers` (see [`Self::same_pixels_with`] and [`Project::reads_markers`]).
     pub fn pixel_form_with(&self, with_markers: bool) -> std::borrow::Cow<'_, Comp> {
-        if !self.hide_shy
+        if self.layer_groups.is_empty()
+            && !self.hide_shy
             && self.resolution.is_auto()
             && self.layers.iter().all(|l| l.switches == l.switches.pixels())
             && (with_markers || (self.markers.iter().all(is_timing_marker) && self.layers.iter().all(|l| l.markers.is_empty())))
@@ -430,6 +441,10 @@ impl Comp {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut c = self.clone();
+        // Retain only the effective folder Video gate. Matte sources ignore their own
+        // Video switch, so folding this into each layer's switch would lose information.
+        let hidden: Vec<_> = self.layers.iter().filter(|l| !self.layer_group_video_enabled(l.id)).map(|l| l.id).collect();
+        c.layer_groups = if hidden.is_empty() { Vec::new() } else { vec![LayerGroup { id: 1, members: hidden, video: false, ..LayerGroup::default() }] };
         c.hide_shy = false;
         c.resolution = Resolution::Auto;
         if !with_markers {

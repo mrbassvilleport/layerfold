@@ -35,7 +35,8 @@ pub enum Req {
     CompByName { name: String },
     /// Layer id or null.
     LayerLookup { comp: u64, key: Key },
-    /// `[name, index, inPoint, outPoint, startTime, width, height, parentId|null, hasVideo, is3D, source, enabled]`.
+    /// `[name, index, inPoint, outPoint, startTime, width, height, parentId|null, hasVideo, is3D, source, enabled,
+    /// visible]`; `visible` also needs every layer folder's Video on.
     LayerInfo { comp: u64, layer: u64 },
     /// `[path, isGroup, name, matchName, numChildren, propertyIndex]` or null.
     Child { comp: u64, layer: u64, group: String, key: Key },
@@ -395,10 +396,12 @@ impl<'a> Resolver<'a> {
                     Resp::Num(w as f64),
                     Resp::Num(h as f64),
                     l.parent.map_or(Resp::Null, |p| Resp::Num(p.0 as f64)),
-                    Resp::Bool(l.has_video()),
+                    // A hidden folder acts like the layer's own Video switch.
+                    Resp::Bool(l.has_video() && c.layer_group_video_enabled(l.id)),
                     Resp::Bool(l.is_3d()),
                     Resp::Str(l.source.type_name().to_string()),
                     Resp::Bool(l.switches.video),
+                    Resp::Bool(c.layer_effectively_visible(l.id)),
                 ])
             }
             Req::Child { comp, layer, group, key } => {

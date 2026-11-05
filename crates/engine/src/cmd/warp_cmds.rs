@@ -23,7 +23,7 @@ fn can_stabilize(s: &Session) -> std::result::Result<(), String> {
     has_comp(s)?;
     let c = s.active_comp().ok_or("no composition is open")?;
     match s.state.selected_layers.first().and_then(|l| c.layer(*l)) {
-        Some(l) if l.has_video() && !l.switches.adjustment => Ok(()),
+        Some(l) if l.has_video() && c.layer_group_video_enabled(l.id) && !l.switches.adjustment => Ok(()),
         Some(_) => Err("Warp Stabilizer needs a footage or composition layer".into()),
         None => Err("select a layer to stabilize".into()),
     }
@@ -78,6 +78,7 @@ fn warp_p(s: &Session, p: &Value, cmd: &str) -> Result<(ItemId, LayerId, Uid)> {
 
 fn warp_analyze(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid, uid) = warp_p(s, p, "warp.analyze")?;
+    super::group_unlocked(s, cid, vec![lid], "warp.analyze")?;
     let wait = b_p(p, "wait").unwrap_or(false);
     let n = s.start_warp(cid, lid, uid, wait).map_err(EngineError::Other)?;
     let mut out = json!({"layer": lid.0, "effect": uid, "frames": n, "running": s.is_warp_analyzing(), "progress": s.warp_progress()});

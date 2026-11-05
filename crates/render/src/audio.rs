@@ -39,7 +39,7 @@ pub fn comp_has_audio(project: &Project, comp: ItemId) -> bool {
         let Some(c) = project.comp(comp) else { return false };
         depth < MAX_DEPTH
             && c.layers.iter().any(|l| {
-                l.switches.audio
+                c.layer_effectively_audio(l.id)
                     && (generates(l)
                         || match &l.source {
                             LayerSource::Footage { item } => {
@@ -288,10 +288,10 @@ fn mix_into(sources: &AudioSources<'_>, comp_id: ItemId, start: Tick, out: &mut 
     }
     let env = MixEnv { project, footage, expr, comp_id, comp, rate, depth };
     let frames = out.len() / 2;
-    let any_solo = comp.layers.iter().any(|l| l.switches.solo && audible(project, l));
+    let any_solo = comp.layers.iter().any(|l| l.switches.solo && comp.layer_group_audio_enabled(l.id) && audible(project, l));
     let s0 = start.to_units_floor(rate as i64);
     for l in &comp.layers {
-        if !audible(project, l) || (any_solo && !l.switches.solo) || l.stretch <= 0.0 {
+        if !comp.layer_group_audio_enabled(l.id) || !audible(project, l) || (any_solo && !l.switches.solo) || l.stretch <= 0.0 {
             continue;
         }
         // Sample range of the block that falls inside the layer's [in, out).

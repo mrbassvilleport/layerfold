@@ -13,7 +13,7 @@ pub const VIEWS: &[&str] = &["Standard", "Tone Mapped", "Raw"];
 
 /// Configuration popup: the built-in config, or a custom `.ocio` file (Config File: a path or
 /// the config's text; spaces chosen by name, see [`crate::ocio_config`]).
-pub const CONFIGS: &[&str] = &["Built-in (EffectCraft minimal)", "Custom (.ocio file)"];
+pub const CONFIGS: &[&str] = &["Built-in (Layerfold minimal)", "Custom (.ocio file)"];
 
 /// Built-in looks: CDLs applied in ACEScct.
 pub fn looks() -> Vec<(&'static str, Cdl)> {

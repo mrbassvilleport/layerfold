@@ -327,7 +327,8 @@ impl Doc<'_> {
             }
         }
         o.insert("ddd".into(), json!(three as u8));
-        let mut hidden = !l.switches.video || l.switches.guide;
+        // A hidden layer folder hides its layers (and its mattes) without their own switch.
+        let mut hidden = !comp.layer_effectively_visible(l.id) || l.switches.guide;
         let mut ty = 3;
         match &l.source {
             LayerSource::Shape => {
@@ -447,7 +448,7 @@ impl Doc<'_> {
         }
         if is_matte {
             o.insert("td".into(), json!(1));
-            if l.switches.video {
+            if comp.layer_effectively_visible(l.id) {
                 self.ex.warn(format!("{name}: visible track matte layer (Lottie always hides matte layers)"));
             }
         } else if hidden {
@@ -509,7 +510,7 @@ pub fn export_comp(project: &Project, comp: ItemId, opts: &ExportOptions, read: 
 pub fn to_dotlottie(res: &ExportResult, id: &str) -> Vec<u8> {
     let id: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
     let id = if id.is_empty() { "animation".to_string() } else { id };
-    let manifest = json!({"version": "1", "generator": "EffectCraft", "author": "", "animations": [{"id": id, "speed": 1, "loop": true}]});
+    let manifest = json!({"version": "1", "generator": "Layerfold", "author": "", "animations": [{"id": id, "speed": 1, "loop": true}]});
     crate::zip::store(&[
         ("manifest.json".into(), serde_json::to_vec(&manifest).unwrap_or_default()),
         (format!("animations/{id}.json"), serde_json::to_vec(&res.json).unwrap_or_default()),

@@ -1,10 +1,15 @@
+use effectcraft_project::{GroupKind, Node, PropGroup};
+
+use crate::doc_state::KeyRef;
+
 use super::{
-    EngineError, ItemKind, Label, Layer, LayerId, LayerSource, Result, Session, Tick, Value, b_p, bad, build, f_p, json, layer_mut, layers_p, merge_p,
-    resolve_layer, str_p, unlocked, with,
+    EngineError, ItemKind, Label, Layer, LayerId, LayerSource, Result, Session, Tick, Value, b_p, bad, build, f_p, group_unlocked, json, layer_groups,
+    layer_mut, layers_p, locked_dependant, merge_p, resolve_layer, str_p, unlocked, with,
 };
 
 pub(super) fn timing(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, "layer.timing")?;
     let t = s.time();
     let op = str_p(p, "op").unwrap_or("set").to_string();
     // Layer times stay on frame boundaries of the comp (as in AE).
@@ -86,9 +91,12 @@ pub(super) fn move_frames(s: &mut Session, p: &Value, frames: i64) -> Result<Val
 /// dragging the source-duration bar in After Effects. `delta` in seconds or `frames`; positive
 /// moves the source later. Clamped so the source still covers the in–out span: the result gives
 /// the `requested` shift and, per layer, the `delta` applied and whether it was `clamped` (#2371).
-/// Keyframes and layer markers are in layer time, so they travel with the source.
+/// Keyframes and layer markers are in layer time, so they travel with the source; with `holdKeys`
+/// keyframes stay where they are in the comp instead (the timeline's slip: an animation made for
+/// this stretch of the timeline keeps playing there over the newly chosen moment).
 pub(super) fn slip(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, "layer.slip")?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let fr = comp.frame_rate;
     let delta = match (p.get("frames").and_then(Value::as_i64), f_p(p, "delta")) {
@@ -99,20 +107,7 @@ pub(super) fn slip(s: &mut Session, p: &Value) -> Result<Value> {
     // Allowed shift per layer: the source span [lo, hi] in comp time must keep covering in..out.
     let mut shifts: Vec<(LayerId, Tick)> = Vec::new();
     for l in comp.layers.iter().filter(|l| ids.contains(&l.id)) {
-        if l.props.get("timeRemap").is_some() {
-            continue;
-        }
-        let dur = match &l.source {
-            LayerSource::Footage { item } => match s.project.item(*item).map(|i| &i.kind) {
-                Some(ItemKind::Footage(f)) if f.kind != effectcraft_project::FootageKind::Still => Some(f.looped_duration()),
-                _ => None,
-            },
-            LayerSource::Comp { item } => s.project.comp(*item).map(|c| c.duration),
-            _ => None,
-        };
-        let Some(dur) = dur else { continue };
-        let (a, b) = (l.comp_time(Tick::ZERO), l.comp_time(dur));
-        let (lo, hi) = (a.min(b), a.max(b));
+        let Some((lo, hi)) = l.source_span(&s.project, comp.frame_duration()) else { continue };
         let (min_d, max_d) = (l.out_point - hi, l.in_point - lo);
         if min_d > max_d {
             continue;
@@ -122,10 +117,15 @@ pub(super) fn slip(s: &mut Session, p: &Value) -> Result<Value> {
     if shifts.is_empty() {
         return Err(bad("layer.slip", "select a footage or precomp layer (without time remapping)"));
     }
-    s.edit("Slip Edit", merge_p(p), |proj, _| {
+    let hold_keys = p.get("holdKeys").and_then(Value::as_bool).unwrap_or(false);
+    s.edit("Slip Edit", merge_p(p), |proj, st| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
         for (id, d) in &shifts {
             if let Some(l) = comp.layer_mut(*id) {
+                if hold_keys {
+                    let shift = super::super::prop::layer_shift(l, *d);
+                    shift_keys_back(&mut l.props, shift, *id, &mut st.selected_keys);
+                }
                 l.start_time += *d;
             }
         }
@@ -135,6 +135,53 @@ pub(super) fn slip(s: &mut Session, p: &Value) -> Result<Value> {
         "requested": delta.seconds(),
         "slipped": shifts.iter().map(|(id, d)| json!({"layer": id.0, "delta": d.seconds(), "clamped": *d != delta})).collect::<Vec<_>>(),
     }))
+}
+
+/// Takes `shift` off every key's layer time. Paint keeps its keys: a stroke's visible span is fixed
+/// in layer time and it is drawn on the picture, so it stays with the source, Write On included.
+fn shift_keys_back(group: &mut PropGroup, shift: Tick, layer: LayerId, selected: &mut [KeyRef]) {
+    for child in &mut group.children {
+        match child {
+            Node::Prop(p) => {
+                p.keys.iter_mut().for_each(|k| k.time -= shift);
+                selected.iter_mut().filter(|k| k.layer == layer && k.prop == p.uid).for_each(|k| k.time -= shift);
+            }
+            Node::Group(g) if matches!(&g.kind, GroupKind::Effect { effect } if effect == effectcraft_effects::paint::ID) => {}
+            Node::Group(g) => shift_keys_back(g, shift, layer, selected),
+        }
+    }
+}
+
+/// Set a layer's In and Out to the first and last frame of its source, so all of it plays.
+pub(super) fn trim_to_source(s: &mut Session, p: &Value) -> Result<Value> {
+    let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, "layer.trimToSource")?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let (fr, fd) = (comp.frame_rate, comp.frame_duration());
+    let spans: Vec<(LayerId, Tick, Tick)> = comp
+        .layers
+        .iter()
+        .filter(|l| ids.contains(&l.id))
+        .filter_map(|l| {
+            let (lo, hi) = l.source_span(&s.project, fd)?;
+            let at = fr.snap_nearest(lo);
+            Some((l.id, at, fr.snap_nearest(hi).max(at + fd)))
+        })
+        .collect();
+    if spans.is_empty() {
+        return Err(bad("layer.trimToSource", "select a footage or precomp layer (without time remapping)"));
+    }
+    s.edit("Trim Layer to Source", merge_p(p), |proj, _| {
+        let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
+        for (id, at, out) in &spans {
+            if let Some(l) = comp.layer_mut(*id) {
+                l.in_point = *at;
+                l.out_point = *out;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
 }
 
 pub(super) fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
@@ -156,6 +203,10 @@ pub(super) fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     };
     s.edit("Arrange Layers", None, |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
+        if !comp.layer_groups.is_empty() {
+            layer_groups::arrange_grouped(comp, &ids, &how, index, above)?;
+            return Ok(());
+        }
         // Bring Forward / Send Backward move each layer one step past the next layer that isn't
         // moving (a run of selected layers moves as one; one already at the end stays).
         if above.is_none() && index.is_none() && matches!(how.as_str(), "forward" | "backward") {
@@ -209,6 +260,7 @@ pub(super) fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
 pub(super) fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "layer.precompose";
     let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, c)?;
     if ids.is_empty() {
         return Err(bad(c, "no layers"));
     }
@@ -220,6 +272,16 @@ pub(super) fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
         x => return Err(bad(c, format!("mode: move|leave, got `{x}`"))),
     };
     let adjust = b_p(p, "adjustDuration").unwrap_or(false);
+    if !leave {
+        // All inside one folder or all outside folders: the precomp layer takes their place.
+        let folder = |id: &LayerId| comp.layer_group(*id).map(|g| g.id);
+        if ids.iter().any(|id| folder(id) != folder(&ids[0])) {
+            return Err(bad(c, "the layers are in different layer groups; put them all in one group, or all outside groups, first"));
+        }
+        if let Some(l) = locked_dependant(&s.project, cid, &ids) {
+            return Err(bad(c, format!("“{}” in a locked layer group uses these layers; unlock the group in the Timeline", l.name)));
+        }
+    }
     if leave {
         let [lid] = ids[..] else { return Err(bad(c, "\"Leave all attributes\" needs exactly one layer")) };
         let layer = comp.layer(lid).ok_or(EngineError::NoComp)?.clone();
@@ -281,6 +343,13 @@ pub(super) fn precompose(s: &mut Session, p: &Value) -> Result<Value> {
         let at = c.layers.iter().position(|l| ids.contains(&l.id)).unwrap_or(0);
         c.layers.retain(|l| !ids.contains(&l.id));
         let lid = l.id;
+        // The precomp layer joins the folder (and its ancestors) the moved layers were in.
+        for g in &mut c.layer_groups {
+            if let Some(k) = g.members.iter().position(|m| ids.contains(m)) {
+                g.members.insert(k, lid);
+                g.members.retain(|m| !ids.contains(m));
+            }
+        }
         c.layers.insert(at.min(c.layers.len()), l);
         st.selected_layers = vec![lid];
         Ok((iid, lid))

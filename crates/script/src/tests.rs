@@ -1911,3 +1911,33 @@ fn setting_comp_width_and_height_leaves_the_layers_where_they_are() {
     let (_, c) = comp_named(&s, "w");
     assert_eq!(layer(c, "s").props.prop("transform/position").unwrap().value, KV::Vec3([100.0, 100.0, 0.0]));
 }
+
+/// A layer in a hidden folder is not active (it draws nothing), though its own switch, `enabled`,
+/// stays on: scripts set `enabled`, the folder's Video belongs to the folder.
+#[test]
+fn a_hidden_folder_makes_its_layers_inactive_but_keeps_enabled() {
+    let mut s = session();
+    s.execute("comp.new", json!({"name": "Folders", "width": 64, "height": 64, "duration": 4})).unwrap();
+    let id = s.execute("layer.newSolid", json!({"name": "Inside", "color": "#ff0000"})).unwrap()["layer"].as_u64().unwrap();
+    let group = s.execute("layer.group", json!({"layers": [id]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+    let o = ok(&mut s, "var l = app.project.activeItem.layer(1); writeLn([l.enabled, l.active, l.activeAtTime(1)].join(','));");
+    assert_eq!(o.output, vec!["true,false,false"]);
+}
+
+/// A folder with Audio off mutes its layers: `audioActive` follows, `audioEnabled` (own switch) stays.
+#[test]
+fn a_muted_folder_makes_audio_inactive_but_keeps_audio_enabled() {
+    let mut s = session();
+    s.execute("comp.new", json!({"name": "Inner", "width": 64, "height": 64, "duration": 4})).unwrap();
+    let inner = s.active_comp_id().unwrap();
+    s.execute("comp.new", json!({"name": "Muted", "width": 64, "height": 64, "duration": 4})).unwrap();
+    let id = s.execute("layer.addItem", json!({"item": inner.0})).unwrap()["layer"].as_u64().unwrap();
+    let group = s.execute("layer.group", json!({"layers": [id]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "audio": false})).unwrap();
+    let o = ok(&mut s, "var l = app.project.activeItem.layer(1); writeLn([l.hasAudio, l.audioEnabled, l.audioActive].join(','));");
+    assert_eq!(o.output, vec!["true,true,false"]);
+    // Like the layer's own Audio switch, a muted folder turns the comp's `hasAudio` off.
+    let o = ok(&mut s, "writeLn(app.project.activeItem.hasAudio);");
+    assert_eq!(o.output, vec!["false"]);
+}

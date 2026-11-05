@@ -217,7 +217,8 @@ fn stroke(s: &mut Session, p: &Value) -> Result<Value> {
     let points = points_p(p, cmd)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or_else(|| bad(cmd, "no layer"))?;
-    if !layer.has_video() || layer.switches.adjustment || layer.effects().is_none() {
+    // A layer in a hidden folder is like one with its own Video off.
+    if !layer.has_video() || !comp.layer_group_video_enabled(lid) || layer.switches.adjustment || layer.effects().is_none() {
         return Err(bad(cmd, "the Roto Brush works on footage, solid and composition layers"));
     }
     let frame = frame_p(s, p, cid, layer);
@@ -280,6 +281,7 @@ fn stroke(s: &mut Session, p: &Value) -> Result<Value> {
 fn propagate(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "roto.propagate";
     let (cid, lid, uid) = roto_p(s, p, cmd)?;
+    super::group_unlocked(s, cid, vec![lid], cmd)?;
     let dir = match str_p(p, "direction") {
         Some(d) => Direction::from_name(d).ok_or_else(|| bad(cmd, format!("unknown direction `{d}` (forward | backward | both)")))?,
         None => Direction::Both,
@@ -342,6 +344,7 @@ fn span(s: &mut Session, p: &Value) -> Result<Value> {
 fn freeze(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "roto.freeze";
     let (cid, lid, uid) = roto_p(s, p, cmd)?;
+    super::group_unlocked(s, cid, vec![lid], cmd)?;
     let wait = b_p(p, "wait").unwrap_or(false);
     let n = s.start_roto(cid, lid, uid, RotoTask::Freeze, Direction::Both, wait).map_err(|e| bad(cmd, e))?;
     let (_, g) = group(s, cid, lid, uid)?;
@@ -537,7 +540,7 @@ fn object_matte_apply(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, lid) = layer_p(s, p, cmd)?;
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let layer = comp.layer(lid).ok_or_else(|| bad(cmd, "no layer"))?;
-    if !layer.has_video() || layer.switches.adjustment || layer.effects().is_none() {
+    if !layer.has_video() || !comp.layer_group_video_enabled(lid) || layer.switches.adjustment || layer.effects().is_none() {
         return Err(bad(cmd, "Object Matte works on footage, solid and composition layers"));
     }
     // Re-prompt an existing instance (the Object Matte tool on a layer that has one).
@@ -648,6 +651,7 @@ fn object_matte_reach(s: &Session, cid: ItemId, lid: LayerId, uid: Uid) -> (bool
 fn object_matte_propagate(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "objectMatte.propagate";
     let (cid, lid, uid) = object_matte_p(s, p, cmd)?;
+    super::group_unlocked(s, cid, vec![lid], cmd)?;
     let dir = match str_p(p, "direction") {
         Some(d) => Direction::from_name(d).ok_or_else(|| bad(cmd, format!("unknown direction `{d}` (forward | backward | both)")))?,
         None => Direction::Both,
@@ -664,6 +668,7 @@ fn object_matte_propagate(s: &mut Session, p: &Value) -> Result<Value> {
 fn object_matte_freeze(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "objectMatte.freeze";
     let (cid, lid, uid) = object_matte_p(s, p, cmd)?;
+    super::group_unlocked(s, cid, vec![lid], cmd)?;
     let wait = b_p(p, "wait").unwrap_or(false);
     let n = s.start_roto(cid, lid, uid, RotoTask::Freeze, Direction::Both, wait).map_err(|e| bad(cmd, e))?;
     let (_, g) = group(s, cid, lid, uid)?;

@@ -362,8 +362,10 @@ const MAX_COLLAPSED_DEPTH: usize = 8;
 fn visible_layers<'a>(ctx: &EvalCtx<'a>, exclude: &'a [LayerId]) -> impl Iterator<Item = &'a Layer> {
     let comp = ctx.comp;
     let time = ctx.time;
-    let any_solo = comp.layers.iter().any(|l| l.switches.solo && l.source.is_av());
-    comp.layers.iter().filter(move |l| l.is_active_at(time) && l.switches.video && (!any_solo || l.switches.solo) && !exclude.contains(&l.id))
+    let any_solo = comp.any_solo();
+    comp.layers
+        .iter()
+        .filter(move |l| l.is_active_at(time) && comp.layer_effectively_visible(l.id) && (!any_solo || l.switches.solo) && !exclude.contains(&l.id))
 }
 
 /// A 2D layer's snap targets: its box points, its edges as lines while unrotated (across the

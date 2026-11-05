@@ -101,12 +101,49 @@ pub fn session() -> Session {
     s
 }
 
-/// The platform config directory for EffectCraft (`EFFECTCRAFT_CONFIG_DIR` overrides):
-/// `~/Library/Application Support/EffectCraft` (macOS), `%APPDATA%\EffectCraft` (Windows),
-/// `$XDG_CONFIG_HOME/effectcraft` or `~/.config/effectcraft` (Linux and others). A `portable.txt`
+/// The platform config directory (`EFFECTCRAFT_CONFIG_DIR` overrides):
+/// `~/Library/Application Support/Layerfold` (macOS), `%APPDATA%\Layerfold` (Windows),
+/// `$XDG_CONFIG_HOME/layerfold` or `~/.config/layerfold` (Linux and others). A `portable.txt`
 /// beside the executable puts it in `EffectCraftData` there instead ([`app_dirs`]).
 pub fn config_dir() -> Option<std::path::PathBuf> {
     app_dirs::current().dir.clone()
+}
+
+/// The file holding the control channel's token for `port`, in the config directory: only this user
+/// can read it, unless a portable copy keeps that directory somewhere shared.
+fn control_token_path(port: u16) -> Option<std::path::PathBuf> {
+    Some(config_dir()?.join(format!("control-{port}.token")))
+}
+
+/// A new token for the control channel on `port`, saved for the clients of this user. `None` if it
+/// can't be saved: the channel then stays closed.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn create_control_token(port: u16) -> Option<String> {
+    let path = control_token_path(port)?;
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    save_new_token(&path)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_new_token(path: &std::path::Path) -> Option<String> {
+    use std::io::Write;
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).ok()?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    // The last launch's file goes first: `create_new` refuses whatever is still at this path, so
+    // the token can't be written through a link planted there.
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path).and_then(|mut f| f.write_all(token.as_bytes())).ok()?;
+    Some(token)
+}
+
+/// The token of the app listening on `port`, for a client on this computer.
+pub fn read_control_token(port: u16) -> Option<String> {
+    std::fs::read_to_string(control_token_path(port)?).ok().map(|t| t.trim().to_string())
 }
 
 #[cfg(test)]

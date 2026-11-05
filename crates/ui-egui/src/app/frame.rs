@@ -91,6 +91,7 @@ impl EffectcraftApp {
     /// Apply the engine events drained this tick: open a comp, show a toast, open a URL, run a frontend command,
     /// purge frame caches or copy an image; command and clipboard failures go to `app.ui.status`.
     pub(crate) fn handle_events(&mut self, ctx: &egui::Context) {
+        let mut project_changed = false;
         for ev in self.session.drain_events() {
             match ev {
                 effectcraft_engine::Event::OpenComp(c) => {
@@ -100,19 +101,25 @@ impl EffectcraftApp {
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, self.now)),
                 effectcraft_engine::Event::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
                 // Frames are keyed by content: an edit keeps those of comps it doesn't touch.
-                effectcraft_engine::Event::ProjectChanged { .. } => {}
+                effectcraft_engine::Event::ProjectChanged { .. } => project_changed = true,
                 effectcraft_engine::Event::Frontend { command, params } => {
                     if let Err(e) = crate::menus::frontend(self, ctx, &command, params) {
                         self.ui.status = e;
                     }
                 }
-                effectcraft_engine::Event::PurgeCaches => self.frames.clear(),
+                effectcraft_engine::Event::PurgeCaches => {
+                    self.frames.clear();
+                    self.filmstrips.clear();
+                }
                 effectcraft_engine::Event::CopyImage { width, height, rgba } => {
                     if let Err(e) = copy_image(ctx, width, height, &rgba) {
                         self.ui.status = e;
                     }
                 }
             }
+        }
+        if project_changed {
+            self.refresh_audio();
         }
     }
 
@@ -414,6 +421,7 @@ impl EffectcraftApp {
         // After the shortcuts, menus and header, which can replace the project (New, Open).
         self.ui.timeline.scope_links(self.session.script_ui.project_epoch);
         self.dock_area(ui, body);
+        self.filmstrips.end_frame(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         prefs_live::dropped_files(self, ui, full);
         if !tab_had_widget_focus {

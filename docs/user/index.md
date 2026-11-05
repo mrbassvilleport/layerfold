@@ -33,4 +33,4 @@ EffectCraft is young and in alpha. It cannot open After Effects projects (`.aep`
 
 ## Get help
 
-Ask in [Discord](https://discord.gg/artcraft) or open an issue in the [issue tracker](https://github.com/storytold/effectcraft/issues). Say which version and which system you use.
+Open an issue in the [issue tracker](https://github.com/mrbassvilleport/layerfold/issues). Say which version and which system you use.

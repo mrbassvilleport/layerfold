@@ -39,4 +39,4 @@ The window can also take a long time to appear. On 0.8.0 with an RTX 5060 Ti, on
 
 ## Still stuck?
 
-Ask in [Discord](https://discord.gg/artcraft) or open an issue in the [issue tracker](https://github.com/storytold/effectcraft/issues). Include the whole System Compatibility Report, your graphics card and driver version, and whether you also have an integrated GPU.
+Open an issue in the [issue tracker](https://github.com/mrbassvilleport/layerfold/issues). Include the whole System Compatibility Report, your graphics card and driver version, and whether you also have an integrated GPU.

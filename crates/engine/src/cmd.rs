@@ -34,6 +34,7 @@ mod key_labels;
 mod key_transform;
 mod keys_more;
 mod layer;
+mod layer_groups;
 mod layer_menu;
 mod layer_time;
 pub(crate) mod link;
@@ -156,16 +157,20 @@ macro_rules! query {
 }
 
 mod enabled;
+mod group_locks;
 mod params;
 mod schema;
 
 use super::commands;
 pub use enabled::always;
 pub(crate) use enabled::{has_comp, has_keys, has_layers, has_project_selection, not_yet, not_yet_run};
+#[cfg(test)]
+pub(crate) use group_locks::{ExprComp, ExprLayer, ExprLayerRef, expr_layer_refs};
+pub(crate) use group_locks::{locked_dependant, locked_reader_of_comps};
 pub use params::match_path_of;
 pub(crate) use params::{
-    b_p, bad, comp_id, f_p, frontend, layer_mut, layer_p, layers_or, layers_p, merge_p, popup_options, resolve_effect_path, resolve_layer, selectable,
-    selected_leaf_props, str_p, time_p, unlocked, visible_p,
+    b_p, bad, comp_id, f_p, frontend, group_unlocked, layer_mut, layer_p, layers_or, layers_p, locked_by_group, merge_p, popup_options, resolve_effect_path,
+    resolve_layer, selectable, selected_leaf_props, str_p, time_p, unlocked, visible_p,
 };
 pub use schema::{accepted_params, check_params, params_schema};
 
@@ -178,6 +183,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(edit::specs());
         v.extend(comp::specs());
         v.extend(layer::specs());
+        v.extend(layer_groups::specs());
         v.extend(styles::specs());
         v.extend(three_d::specs());
         v.extend(model3d::specs());

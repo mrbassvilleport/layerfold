@@ -1,8 +1,8 @@
 asset:        effectcraft-1024.png
-title:        EffectCraft app icon, 1024 px
-author:       EffectCraft contributors (drawing by the project owner in ArtCraft)
+title:        Layerfold app icon
+author:       Layerfold contributors
 source:       original work
 license:      MIT OR Apache-2.0
 license-file: assets/app-icon/LICENSE.txt
-added:        2026-10-02 by EffectCraft contributors (Claude agent, app icon)
-notes:        Rendered from effectcraft.svg with resvg by packaging/icons.sh.
+added:        2026-11-03 by Layerfold contributors (Claude agent, app icon)
+notes:        Generated from polygons by editor/scripts/make-icon.py: one sheet folded into three layers. Replaces the EffectCraft unicorn.
