@@ -347,7 +347,8 @@ fn auto_range(cs: &[Curve], speed: bool) -> (f64, f64) {
         lo = lo.min(0.0);
     }
     if (hi - lo).abs() < 1e-9 {
-        hi = lo + 1.0;
+        // Far from zero, adding 1 no longer changes a value and the range would have no height.
+        hi = lo + (lo.abs() * 1e-9).max(1.0);
     }
     let pad = (hi - lo) * 0.08;
     (lo - pad, hi + pad)
@@ -374,6 +375,12 @@ fn box_select(ui: &egui::Ui, pc: &egui::Painter, bg: &egui::Response, key_screen
         let keys: Vec<serde_json::Value> = key_screens.iter().filter(|(_, sp)| br.contains(*sp)).map(|(k, _)| k.clone()).collect();
         actions.push(("keys.select".into(), json!({"keys": keys, "add": ui.input(|i| i.modifiers.shift)})));
     }
+}
+
+/// Whether a stored value range can map values to the plot: fitting very large values leaves no
+/// height, because the fit's padding rounds away.
+fn usable_range((lo, hi): (f64, f64)) -> bool {
+    lo.is_finite() && hi.is_finite() && hi - lo > (lo.abs().max(hi.abs()) * 1e-12).max(1e-9)
 }
 
 /// Wheel over the graph with Ctrl zooms the value axis `(lo, hi)` (turns auto-zoom off).
@@ -447,7 +454,8 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
     // While a key or handle is being dragged the scale stays put (no feedback loop).
     let drag_id = egui::Id::unique("graph-dragging");
     let dragging = ctx.data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false) && ctx.input(|i| i.pointer.any_down());
-    let (lo, hi) = if app.ui.timeline.graph_auto_zoom && !dragging { auto } else { app.ui.timeline.graph_range.unwrap_or(auto) };
+    let (lo, hi) =
+        if app.ui.timeline.graph_auto_zoom && !dragging { auto } else { app.ui.timeline.graph_range.filter(|range| usable_range(*range)).unwrap_or(auto) };
     if app.ui.timeline.graph_auto_zoom && !dragging {
         app.ui.timeline.graph_range = Some((lo, hi));
     }
@@ -456,14 +464,7 @@ pub(crate) fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painte
 
     // Grid + value labels.
     let pc = p.with_clip_rect(plot);
-    let step = nice_step((hi - lo) / 6.0);
-    let mut gv = (lo / step).ceil() * step;
-    while gv <= hi {
-        let y = ymap(gv);
-        pc.line_segment([pos2(plot.min.x, y), pos2(plot.max.x, y)], Stroke::new(1.0, Color32::from_white_alpha(12)));
-        pc.text(pos2(plot.min.x + 4.0, y - 1.0), Align2::LEFT_BOTTOM, fmt(gv, step), Tokens::ui(10.0), t.text_faint);
-        gv += step;
-    }
+    value_grid(&pc, plot, (lo, hi), t.text_faint, ymap);
     if cs.is_empty() {
         p.text(
             plot.center(),
@@ -825,6 +826,23 @@ fn fit_selection(app: &mut EffectcraftApp, cs: &[Curve], tm: TMap, plot: Rect, s
     app.ui.timeline.graph_auto_zoom = false;
     app.ui.timeline.graph_range = Some((v0 - pad, v1 + pad));
     let _ = tm;
+}
+
+/// The horizontal value lines and their labels.
+fn value_grid(pc: &egui::Painter, plot: Rect, (lo, hi): (f64, f64), label: Color32, ymap: impl Fn(f64) -> f32) {
+    let step = nice_step((hi - lo) / 6.0);
+    let mut gv = (lo / step).ceil() * step;
+    while gv <= hi {
+        let y = ymap(gv);
+        pc.line_segment([pos2(plot.min.x, y), pos2(plot.max.x, y)], Stroke::new(1.0, Color32::from_white_alpha(12)));
+        pc.text(pos2(plot.min.x + 4.0, y - 1.0), Align2::LEFT_BOTTOM, fmt(gv, step), Tokens::ui(10.0), label);
+        // Far from zero a step can be too small to change the value, and this would never end.
+        let next = gv + step;
+        if next <= gv {
+            break;
+        }
+        gv = next;
+    }
 }
 
 fn nice_step(raw: f64) -> f64 {

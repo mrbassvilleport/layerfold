@@ -10,6 +10,7 @@ pub const SCRIPT_WRITES: &[(&str, &[&str])] = &[
     ("file.saveCopyAsXml", &["path"]),
     ("file.collectFiles", &["folder"]),
     ("file.exportLottie", &["path"]),
+    ("file.exportAep", &["path"]),
     ("file.exportTimeline", &["path"]),
     ("file.createProxy", &["path", "output"]),
     ("comp.saveFrameAs", &["path"]),

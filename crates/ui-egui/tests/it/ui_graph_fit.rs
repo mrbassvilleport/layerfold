@@ -3,6 +3,7 @@
 //! layer isn't selected), else Fit All Graphs to View. It used to open on an empty 0–100 range
 //! or with the curves off-view.
 
+use crate::gpu_test::RenderSerial;
 use effectcraft_engine::Session;
 use effectcraft_ui_egui::EffectcraftApp;
 use egui_kittest::Harness;
@@ -148,4 +149,74 @@ fn an_unlocked_graph_keys_menu_edits_the_clicked_key() {
     let prop = h.state().session.active_comp().unwrap().layer(effectcraft_engine::project::LayerId(layer)).unwrap().props.find(uid).unwrap();
     assert_eq!(prop.keys[0].out_interp, effectcraft_engine::keyframe::Interp::Bezier);
     assert_eq!(prop.keys[1].out_interp, effectcraft_engine::keyframe::Interp::Linear);
+}
+
+/// How many horizontal lines cross the plot on a column clear of labels and playhead.
+fn grid_lines(h: &mut Harness<'_, EffectcraftApp>) -> usize {
+    let plot = h.state().auto.find("timeline.graph").expect("graph plot").rect;
+    let img = h.render_serialized().unwrap();
+    let scale = img.width() as f32 / 1600.0;
+    let x = ((plot[0] + plot[2] * 0.2) * scale) as u32;
+    let column: Vec<_> = ((plot[1] * scale) as u32..((plot[1] + plot[3]) * scale) as u32).map(|y| *img.get_pixel(x, y)).collect();
+    let mut bare = column.clone();
+    bare.sort_by_key(|p| p.0);
+    let background = bare[bare.len() / 2];
+    column.windows(2).filter(|w| w[0] == background && w[1] != background).count()
+}
+
+/// Far from zero, a value is too coarse to change by a small step: the value grid used to add its
+/// step for ever, whether the keys were equal or a step apart. The graph opens with its grid, a
+/// real range and its keys in view, on auto-zoom and on Fit Selection alike.
+#[test]
+fn values_too_big_for_the_grid_step_do_not_hang_the_graph() {
+    let _device = crate::gpu_test::lock();
+    for (a, b) in [(1e20, 1e20), (1e20, 1e20 + 65536.0)] {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": "Big", "width": 320, "height": 180, "frameRate": 30, "duration": 20})).unwrap();
+        s.execute("layer.newSolid", json!({"name": "Box", "color": "#e04020", "width": 80, "height": 80})).unwrap();
+        let id = s.active_comp().unwrap().layers[0].id;
+        for (t, v) in [(8.0, a), (12.0, b)] {
+            s.execute("prop.addKey", json!({"layer": id.0, "path": "transform/rotation", "time": t, "value": v})).unwrap();
+        }
+        let uid = s.active_comp().unwrap().layer(id).unwrap().props.prop("transform/rotation").unwrap().uid;
+        s.execute("layer.select", json!({"layers": [id.0]})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| EffectcraftApp::new(s));
+        h.run_steps(3);
+        open_graph(&mut h);
+        let (lo, hi) = h.state().ui.timeline.graph_range.expect("graph range");
+        assert!(lo.is_finite() && hi.is_finite() && lo < hi, "{lo}..{hi}");
+        // A step apart, the fit's padding rounds away and a key sits on the plot's edge.
+        if a == b {
+            assert_framed(&h, uid, &[0, 1], a, b);
+        }
+        assert!(grid_lines(&mut h) >= 3, "the grid is drawn");
+        // Close and reopen with a key selected: that fits the selection.
+        h.state_mut().session.execute("keys.select", json!({"keys": [{"layer": id.0, "prop": uid, "time": 8.0}]})).unwrap();
+        let ctx = h.ctx.clone();
+        effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "timeline.graphEditor", json!({})).unwrap();
+        h.run_steps(2);
+        open_graph(&mut h);
+        assert!(!h.state().ui.timeline.graph_auto_zoom, "Fit Selection turns auto-zoom off");
+        if a == b {
+            assert_framed(&h, uid, &[0, 1], a, a);
+        }
+    }
+}
+
+/// A stored range that can't map values gives way to the auto range: the keys stay in view.
+#[test]
+fn a_broken_value_range_falls_back_to_the_curves() {
+    let (mut h, _, uid) = harness(true);
+    open_graph(&mut h);
+    for range in [(500.0, 500.0), (720.0, 300.0), (f64::NAN, f64::NAN), (f64::NEG_INFINITY, f64::INFINITY)] {
+        h.state_mut().ui.timeline.graph_auto_zoom = false;
+        h.state_mut().ui.timeline.graph_range = Some(range);
+        h.run_steps(3);
+        let plot = h.state().auto.find("timeline.graph").unwrap().rect;
+        for i in [0, 1] {
+            let k = h.state().auto.find(&format!("timeline.graph.key.{uid}.0.{i}")).unwrap().rect;
+            let y = k[1] + k[3] / 2.0;
+            assert!(y > plot[1] && y < plot[1] + plot[3], "{range:?}: key {i} at {y} outside {plot:?}");
+        }
+    }
 }

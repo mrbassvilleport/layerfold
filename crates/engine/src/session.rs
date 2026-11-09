@@ -11,4 +11,4 @@ pub use dispatch::SCRIPT_WRITES;
 mod edit;
 mod render;
 
-pub use edit::upgrade_effects;
+pub use edit::{DiskSaltJob, upgrade_effects};

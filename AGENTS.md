@@ -112,7 +112,8 @@ reproduce an image (for example, point lists traced from someone else's icon).
 - **Everything is agent-drivable:** every interactive widget registers an automation id; UI state is serde.
 - **Quality gates** before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, layers,
   assets, wasm). On Windows use `editor/scripts/cargo.ps1 --upstream xtask ci`.
-- **New workspace crates** include `[lints] workspace = true` in `Cargo.toml`.
+- **New workspace crates** include `[lints] workspace = true` in `Cargo.toml`. Production crate roots declare
+  the crate-level lint attributes before modules; crate-level `//!` documentation may precede them.
 
 - **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 

@@ -1,6 +1,7 @@
 //! Trimming layers in the Timeline as in After Effects: the pointer over either end of a layer
 //! bar (a few points inside it or just outside) shows the trim cursor, and dragging that end
 //! moves the layer's In or Out point.
+use crate::gpu_test::RenderSerial;
 use effectcraft_engine::Session;
 use effectcraft_engine::project::LayerId;
 use effectcraft_ui_egui::EffectcraftApp;
@@ -613,4 +614,84 @@ fn trimming_a_layer_shorter_than_a_frame_does_not_crash() {
     drag(&mut h, pos2(b.max.x, y), pos2(b.max.x - 60.0, y));
     let (in_point, out, _) = timing(&h, layer);
     assert!(in_point >= 0.0 && out >= in_point, "{in_point} {out}");
+}
+
+/// Whether something is drawn over the bar in its last `span` points: a bare bar is one colour.
+fn has_ink(h: &mut Harness<'_, EffectcraftApp>, id: u64, span: f32) -> bool {
+    // The text's rect is the part of the bar in view; a zoomed-in bar itself runs far past the panel.
+    let auto = &h.state().auto;
+    let bar = auto.find(&format!("timeline.layer.{id}.barText")).or_else(|| auto.find(&format!("timeline.layer.{id}.bar"))).unwrap().rect;
+    let img = h.render_serialized().unwrap();
+    let scale = img.width() as f32 / 1600.0;
+    let y = ((bar[1] + bar[3] / 2.0) * scale) as u32;
+    let right = bar[0] + bar[2];
+    let xs = ((right - span) * scale) as u32..((right - 3.0) * scale) as u32;
+    let mut pixels = xs.flat_map(|x| ((y - 3)..(y + 3)).map(move |y| (x, y))).map(|(x, y)| *img.get_pixel(x, y));
+    let first = pixels.next().unwrap();
+    pixels.any(|p| p != first)
+}
+
+/// A text layer's bar repeats its text, on one line, along the whole bar, so the part of the bar in
+/// view says which layer it is wherever the view is; other layers' bars show nothing.
+#[test]
+fn a_text_layers_bar_repeats_its_text_along_the_bar() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "C", "width": 320, "height": 180, "duration": 100})).unwrap();
+    let solid = s.execute("layer.newSolid", json!({"name": "S", "color": "#336699"})).unwrap()["layer"].as_u64().unwrap();
+    let text = s.execute("layer.newText", json!({"text": "First line\nsecond"})).unwrap()["layer"].as_u64().unwrap();
+    let _device = crate::gpu_test::lock();
+    let mut h = Harness::builder().with_size(vec2(1600., 900.)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(5);
+    let label = |h: &Harness<'_, EffectcraftApp>, id: u64| h.state().auto.find(&format!("timeline.layer.{id}.barText")).map(|e| e.label.clone());
+    assert_eq!(label(&h, text).as_deref(), Some("First line second"));
+    assert_eq!(label(&h, solid), None);
+    assert!(has_ink(&mut h, text, 150.0), "the text reaches the end of the bar");
+    assert!(!has_ink(&mut h, solid, 150.0), "a solid's bar stays bare");
+    // Far along a zoomed-in bar, away from where the layer starts, it still says what it is.
+    h.state_mut().ui.timeline.pps = Some(400.0);
+    h.state_mut().ui.timeline.start = 50.0;
+    h.run_steps(3);
+    assert!(has_ink(&mut h, text, 150.0), "far along the bar");
+}
+
+/// A title that starts empty and is typed on names itself by its first text, not by nothing; a
+/// text decided by an expression, or none at all, by the layer's name.
+#[test]
+fn a_bar_without_a_plain_first_text_still_says_something() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "C", "width": 320, "height": 180, "duration": 10})).unwrap();
+    let typed = s.execute("layer.newText", json!({"text": ""})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("prop.addKey", json!({"layer": typed, "path": "text/sourceText", "time": 0.0, "value": ""})).unwrap();
+    s.execute("prop.addKey", json!({"layer": typed, "path": "text/sourceText", "time": 2.0, "value": "Typed on"})).unwrap();
+    let driven = s.execute("layer.newText", json!({"text": "Base", "name": "Driven layer"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("prop.setExpression", json!({"layer": driven, "path": "text/sourceText", "expression": "'Driven'"})).unwrap();
+    let blank = s.execute("layer.newText", json!({"text": " ", "name": "Blank layer"})).unwrap()["layer"].as_u64().unwrap();
+    let mut h = Harness::builder().with_size(vec2(1600., 900.)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(5);
+    let label = |id: u64| h.state().auto.find(&format!("timeline.layer.{id}.barText")).map(|e| e.label.clone());
+    assert_eq!(label(typed).as_deref(), Some("Typed on"));
+    assert_eq!(label(driven).as_deref(), Some("Driven layer"));
+    assert_eq!(label(blank).as_deref(), Some("Blank layer"));
+}
+
+/// A muted key never shows, so it doesn't name the bar; a project can hold plain string text, which
+/// the renderer shows, so the bar does.
+#[test]
+fn a_bar_takes_only_text_the_layer_can_show() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "C", "width": 320, "height": 180, "duration": 10})).unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let typed = s.execute("layer.newText", json!({"text": ""})).unwrap()["layer"].as_u64().unwrap();
+    for (time, value) in [(0.0, ""), (1.0, "Muted"), (2.0, "Live")] {
+        s.execute("prop.addKey", json!({"layer": typed, "path": "text/sourceText", "time": time, "value": value})).unwrap();
+    }
+    let plain = s.execute("layer.newText", json!({"text": "Unused", "name": "Name"})).unwrap()["layer"].as_u64().unwrap();
+    let comp = std::sync::Arc::make_mut(&mut s.project).comp_mut(cid).unwrap();
+    comp.layer_mut(LayerId(typed)).unwrap().props.prop_mut("text/sourceText").unwrap().keys[1].muted = true;
+    comp.layer_mut(LayerId(plain)).unwrap().props.prop_mut("text/sourceText").unwrap().value = effectcraft_engine::keyframe::Value::Str("Plain".into());
+    let mut h = Harness::builder().with_size(vec2(1600., 900.)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(5);
+    let label = |id: u64| h.state().auto.find(&format!("timeline.layer.{id}.barText")).map(|e| e.label.clone());
+    assert_eq!(label(typed).as_deref(), Some("Live"));
+    assert_eq!(label(plain).as_deref(), Some("Plain"));
 }

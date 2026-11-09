@@ -171,3 +171,20 @@ fn every_panel_registers_automation_ids_for_its_widgets() {
     }
     assert!(gaps.is_empty(), "{} interactive widgets without an automation id:\n{}", gaps.len(), gaps.join("\n"));
 }
+
+/// A zoom sent from outside, however absurd, leaves the timeline drawing: 1e30 used to spin in the
+/// text bars' repeats, and 0 and 1e-300 in the ruler's ticks.
+#[test]
+fn a_bogus_timeline_zoom_does_not_hang_the_app() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "C", "width": 320, "height": 180, "duration": 100})).unwrap();
+    s.execute("layer.newText", json!({"text": "Title"})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600., 900.)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(5);
+    for pps in [json!(1e30), json!(0.0), json!(-5.0), json!(1e-300)] {
+        send(&mut h, "ui.set", json!({"timeline": {"pps": pps, "start": 1.0}}));
+        h.run_steps(3);
+        let zoom = h.state().ui.timeline.pps;
+        assert!(zoom.is_none_or(|z| z > 0.0 && z <= 4000.0), "{zoom:?}");
+    }
+}

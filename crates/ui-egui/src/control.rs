@@ -351,9 +351,13 @@ fn apply_viewer(app: &mut EffectcraftApp, v: &Value) -> Result<(), String> {
 /// to the UI state, leaving absent fields unchanged.
 fn apply_timeline(app: &mut EffectcraftApp, tl: &Value) {
     if let Some(v) = tl.get("pps") {
-        app.ui.timeline.pps = v.as_f64();
+        // A zoom the timeline's own controls can't reach would hang its loops over ticks. Below the
+        // floor means a comp too long to need it (the fit is what it asks for) or nonsense.
+        const FLOOR: f64 = 1e-3;
+        let usable = v.as_f64().filter(|pps| pps.is_finite() && *pps >= FLOOR);
+        app.ui.timeline.pps = usable.map(|pps| pps.min(crate::panels::timeline::MAX_PPS));
     }
-    if let Some(v) = tl.get("start").and_then(Value::as_f64) {
+    if let Some(v) = tl.get("start").and_then(Value::as_f64).filter(|start| start.is_finite()) {
         app.ui.timeline.start = v;
     }
     if let Some(v) = tl.get("graphEditor").and_then(Value::as_bool) {

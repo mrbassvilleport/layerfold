@@ -1,7 +1,7 @@
 # What Layerfold changes in EffectCraft
 
-Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.21.0, tag `v0.21.0`,
-commit `7870b5916ae0749d497d880989683bf2946d6c8b`. This file lists how it differs. It also serves as
+Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.22.0, tag `v0.22.0`,
+commit `42e3c6a6c119d973aa59ab0437487ea6cae6a15d`. This file lists how it differs. It also serves as
 the notice of modified files that the Apache-2.0 license asks for. To see every changed line, compare
 this repository with that tag. Most of the changes are in `crates/ui-egui/`, `crates/engine/`,
 `crates/project/` and `editor/`.
@@ -16,6 +16,7 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
 - Layers go in and out of groups by dragging, and whole groups can be moved the same way.
 - Each group's row has a read-only hatched bar: the union of its layers' spans, with thin lines across
   the gaps. Clicking it selects the group's layers, and a double click collapses or expands the group.
+- A group's icon on the timeline is filled, so groups stand out from layers.
 - A locked group protects its layers from commands as well as from the mouse: paste, delete,
   precompose, analysis jobs (tracking, Roto Brush, Warp Stabilizer and others) and layers created from
   other layers. A layer can't be removed while a layer in a locked group depends on it through a parent,
@@ -30,7 +31,7 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
   clip and its keyframes stay, and layer markers move with the video. Without `holdKeys` the command
   behaves as in After Effects, for scripts.
 - Clip edges stick to the start and end of the source within 8 pixels and go past them into a frozen
-  frame if you keep pulling. The bar that shows the source length is thicker.
+  frame if you keep pulling.
 - Layer ▸ Time ▸ Trim to Source (`layer.trimToSource`) stretches a clip to the whole source.
 - Video and image layers show frames on their tracks (`panels/filmstrip.rs`). They are off for nested
   compositions and layers with Time Remap. The header button `timeline.switch.layerFrames` turns them off
@@ -43,6 +44,11 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
 - Alt+click picks the active layer of a selection, in the timeline and in the viewer. A new group
   gathers around it (`layer.setActive`).
 - Group rows have the same separator line as layer rows.
+- A text layer's bar repeats its text faintly along its whole length: the text of its first frame or
+  first non-empty key that isn't muted, or the layer's name when an expression decides the text or
+  there is none.
+- The graph editor no longer hangs on very large values (around `1e20`), and a stored value range it
+  can't use gives way to the automatic one (`crates/ui-egui/src/panels/graph.rs`).
 
 ## Playback
 
@@ -77,6 +83,7 @@ a script can still write and read files through other commands, even with its pe
 
 - Proxy paths stored in a project, and footage paths in an imported template or timeline, now follow
   the same rule as a project's own footage.
+- `ui.set` on the control channel no longer accepts a timeline zoom that would hang the program.
 - With Allow Scripts to Write Files and Access Network off, a script can no longer write a file it
   names through commands such as `file.saveCopy`. It can still save a project as `.ecproj`.
 - The control channel (`--control`) now asks for a token that the app saves in its settings folder for

@@ -91,9 +91,11 @@ fn shift_range_excludes_children_of_collapsed_folders() {
 }
 
 #[test]
-fn alt_drag_still_moves_layers_in_timeline_and_viewer() {
+fn alt_drag_slips_in_the_timeline_and_duplicates_in_the_viewer() {
     for viewer in [false, true] {
         let (mut h, ids) = harness();
+        let layers = |h: &Harness<'_, EffectcraftApp>| h.state().session.active_comp().unwrap().layers.len();
+        let count = layers(&h);
         let active = h.state().session.active_layer();
         let selected = h.state().session.state.selected_layers.clone();
         let before = h.state().session.project.to_file_json().unwrap();
@@ -104,8 +106,14 @@ fn alt_drag_still_moves_layers_in_timeline_and_viewer() {
             rect(&h, &format!("timeline.layer.{}.bar", ids[1])).center()
         };
         drag(&mut h, from, from + vec2(40., 0.), Modifiers { alt: true, ..Default::default() });
-        assert_eq!(h.state().session.active_layer(), active, "viewer={viewer}");
-        assert_eq!(h.state().session.state.selected_layers, selected);
+        if viewer {
+            assert_eq!(layers(&h), count + selected.len(), "the copies are what moves");
+            assert!(!selected.contains(&h.state().session.active_layer().unwrap()), "the copy becomes active");
+        } else {
+            assert_eq!(layers(&h), count);
+            assert_eq!(h.state().session.active_layer(), active);
+            assert_eq!(h.state().session.state.selected_layers, selected);
+        }
         assert_ne!(h.state().session.project.to_file_json().unwrap(), before, "drag must still work; viewer={viewer}");
     }
 }

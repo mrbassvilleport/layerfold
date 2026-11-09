@@ -473,14 +473,15 @@ impl<'a> Renderer<'a> {
             self.pipe.quantize(&mut canvas);
         }
         // The top-level comp leaves the working space for the (sRGB) display / output.
+        let out = self.output_pipe();
         if self.depth == 0
-            && let Some(c) = self.pipe.output()
+            && let Some(c) = out.output()
         {
             color::convert(&mut canvas, &c);
             self.pipe.quantize(&mut canvas);
         }
         if self.depth == 0
-            && let Some((lin, mode, enc)) = self.pipe.output_hdr()
+            && let Some((lin, mode, enc)) = out.output_hdr()
         {
             color::output_hdr(&mut canvas, lin, mode, enc);
             self.pipe.quantize(&mut canvas);
@@ -615,6 +616,7 @@ impl<'a> Renderer<'a> {
             working_linear: self.pipe.linear,
             float_depth: self.pipe.levels.is_none(),
             shutter: self.mb_on(ctx, layer).then_some((ctx.comp.shutter_angle, ctx.comp.shutter_phase, ctx.comp.motion_blur_samples)),
+            layer_span: crate::eval::layer_span(self.project, layer),
         };
         // Video effects in stack order (index, group, spec); disabled and audio effects skipped.
         let stack: Vec<(usize, &effectcraft_project::PropGroup, &'static effectcraft_effects::EffectSpec)> = fx
@@ -784,7 +786,7 @@ impl<'a> Renderer<'a> {
     pub fn proxy_for(&self, item: ItemId) -> Option<&'a Footage> {
         let it = self.project.item(item)?;
         let px = it.proxy.as_deref()?;
-        (self.opts.proxy.uses(matches!(it.kind, ItemKind::Comp(_)), px.enabled) && px.footage.has_video && !px.footage.missing).then_some(&px.footage)
+        (self.opts.proxy.uses(matches!(it.kind, ItemKind::Comp(_)), px.enabled) && px.footage.has_video).then_some(&px.footage)
     }
 
     /// A decoded frame of `f` as a layer buffer covering `w`×`h` layer pixels (the footage's

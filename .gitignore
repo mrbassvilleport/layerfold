@@ -7,3 +7,7 @@ target/
 .claude/worktrees/
 # Installer pick-up folder (editor/scripts/package-msi.ps1)
 /output/
+__pycache__/
+
+# After Effects test corpus fetched by `cargo xtask aep-corpus`
+/corpus/

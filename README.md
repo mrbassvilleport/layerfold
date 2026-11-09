@@ -11,7 +11,7 @@
 
 ## What it adds
 
-Layerfold is EffectCraft 0.21.0 with changes to how the timeline works. Compositions, the 308 effects, 3D,
+Layerfold is EffectCraft 0.22.0 with changes to how the timeline works. Compositions, the 308 effects, 3D,
 expressions and export all come from EffectCraft. The animations below were filmed from the program
 itself, with only the cursor and the caption added on top. [CHANGES.md](CHANGES.md) has the full list.
 
@@ -63,7 +63,8 @@ layer list.
 ### The rest
 
 Audio and solo can be changed during playback. Alt+click picks the active layer of a selection, the
-one a new group gathers around. The program installs from an MSI on Windows.
+one a new group gathers around. A text layer's bar repeats its text faintly along its length, so you
+can tell bars apart anywhere on the timeline. The program installs from an MSI on Windows.
 
 This version leaves a few things out on purpose. It doesn't check for updates, and it has no links to
 upstream's community and sibling apps, because those would read as their support for a build they
