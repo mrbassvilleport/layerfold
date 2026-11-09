@@ -19,7 +19,8 @@ itself, with only the cursor and the caption added on top. [CHANGES.md](CHANGES.
 
 A timeline with thirty layers gets hard to read, so layers can live in groups, and groups inside
 groups. A group has its own Video, Audio and Lock switches, and its bar shows where its layers sit in
-time, even when it is collapsed. Layers go in and out by dragging.
+time, even when it is collapsed. Its icon is a filled folder, so a group stands out from the layers
+around it. Layers go in and out by dragging.
 
 ![Hiding a group, collapsing it and dragging a layer into it](docs/images/demo/groups.gif)
 
@@ -42,7 +43,7 @@ keyframes and group edges within 8 pixels. A line and a label show what it caugh
 
 An edge stops at the start or end of the source, so you see when you run out of footage. Keep pulling
 and it goes past into a frozen frame, drawn hatched. Layer ▸ Time ▸ Trim to Source stretches a clip
-to the whole video.
+to the whole video. A thin, faint line along the track shows how far the source reaches past the clip.
 
 ![A clip edge stopping at the start of its source, then going past it](docs/images/demo/trim.gif)
 
@@ -60,11 +61,17 @@ layer list.
 
 ![Panning the timeline with the middle mouse button](docs/images/demo/pan.gif)
 
+### Text on the bars
+
+A text layer's bar repeats its text faintly along its length, so you can tell bars apart without
+looking across to the layer list.
+
+![A text layer's bar repeating its text while the timeline pans](docs/images/demo/bartext.gif)
+
 ### The rest
 
 Audio and solo can be changed during playback. Alt+click picks the active layer of a selection, the
-one a new group gathers around. A text layer's bar repeats its text faintly along its length, so you
-can tell bars apart anywhere on the timeline. The program installs from an MSI on Windows.
+one a new group gathers around. The program installs from an MSI on Windows.
 
 This version leaves a few things out on purpose. It doesn't check for updates, and it has no links to
 upstream's community and sibling apps, because those would read as their support for a build they

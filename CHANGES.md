@@ -33,6 +33,7 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
 - Clip edges stick to the start and end of the source within 8 pixels and go past them into a frozen
   frame if you keep pulling.
 - Layer ▸ Time ▸ Trim to Source (`layer.trimToSource`) stretches a clip to the whole source.
+- A thin, faint line along the track shows how far the source reaches past the clip.
 - Video and image layers show frames on their tracks (`panels/filmstrip.rs`). They are off for nested
   compositions and layers with Time Remap. The header button `timeline.switch.layerFrames` turns them off
   for the timeline, and the layer switch `frames` turns them off for one layer. The second is saved in
