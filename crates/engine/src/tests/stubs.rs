@@ -270,6 +270,14 @@ fn rq() -> (Session, Arc<MockExporter>) {
     (s, ex)
 }
 
+/// An output path that is absolute on every platform. `/tmp/...` has no drive letter on Windows,
+/// where it means "the current drive" to the OS but resolves against the home folder's drive in
+/// the render queue, so a test cannot know which drive to expect.
+pub(crate) fn tmp_out(rel: &str) -> String {
+    let base = std::env::temp_dir().join("effectcraft-rq-tests");
+    rel.split('/').fold(base, |p, part| p.join(part)).to_string_lossy().into_owned()
+}
+
 #[test]
 fn add_output_module_encodes_twice() {
     let (mut s, ex) = rq();

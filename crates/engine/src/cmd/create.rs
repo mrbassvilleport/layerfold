@@ -5,7 +5,7 @@
 use effectcraft_color::Label;
 use effectcraft_keyframe::Value as KV;
 use effectcraft_project::build::{self, Ids};
-use effectcraft_project::{ItemKind, LayerSource, Solid};
+use effectcraft_project::{ItemKind, LayerSource, MatteKind, Solid, TrackMatte};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, group_unlocked, has_layers, layers_p, str_p};
@@ -13,6 +13,8 @@ use crate::{EngineError, Result, Session, cmd};
 
 const OPS: &str = "editableText|shapesFromText|masksFromText|shapesFromVector|instance3d";
 
+/// Layer ▸ Create (`layer.create`): the `op` ([`OPS`]) on the given or selected layers; returns
+/// the created layer ids and what was skipped.
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let op = str_p(p, "op").ok_or_else(|| bad("layer.create", format!("missing `op` ({OPS})")))?;
     let (cid, lids) = layers_p(s, p)?;
@@ -68,13 +70,17 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                         fxg.children.push(g.into());
                     }
                     // The model is switched off (After Effects turns the referenced layer off);
-                    // the copies go at the top of the stack, selected.
+                    // the copies go at the top of the stack, selected. A model inside a folder keeps
+                    // its copy there, at the top of its innermost folder, so the folder's Video,
+                    // Audio and Lock apply and a 2D copy never splits the folder's run of 3D layers.
                     let c = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
                     if let Some(m) = c.layers.iter_mut().find(|x| x.id == *lid) {
                         m.switches.video = false;
                     }
                     let id = l.id;
-                    c.layers.insert(0, l);
+                    let at = c.layer_group(*lid).and_then(|g| g.members.iter().filter_map(|m| c.layers.iter().position(|x| x.id == *m)).min()).unwrap_or(0);
+                    c.layers.insert(at, l);
+                    super::edit::inherit_layer_groups(c, *lid, id);
                     ids.push(id);
                 }
                 st.selected_layers = ids.clone();
@@ -100,9 +106,12 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                     skipped.push(format!("{}: not a vector (SVG, PDF, AI or EPS) footage layer", src.name));
                     continue;
                 };
-                let bytes = s.services.read_file(&f.path).map_err(|e| EngineError::Other(format!("cannot read {}: {e}", f.path)))?;
-                let doc = crate::vector::vector_doc(&f.path, &bytes, f.layer.as_ref(), f.page)
+                let bytes = read_footage(s, &f).map_err(EngineError::Other)?;
+                // In the source layer's pixels, as the footage is drawn (a placed page of an After
+                // Effects project fills the stored size, #3099).
+                let doc = crate::vector::footage_doc(&f, &bytes)
                     .unwrap_or_else(|| Err(format!("{}: not a vector file", f.path)))
+                    .map(|d| crate::vector::fitted_to_footage(d, &f))
                     .map_err(EngineError::Other)?;
                 // Images become footage layers (PNG files written next to the source and
                 // imported), parented to the shape layer below it.
@@ -125,7 +134,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                     // Without images: one shape layer. With images: the shapes between them
                     // in layers of their own, so the stack keeps the document's paint order.
                     let segments = if image_items.is_empty() { vec![doc.clone()] } else { crate::vector::split_at_images(&doc) };
-                    let top = crate::vector::shapes_from_vector(proj, &comp, &src, segments.last().unwrap_or(&doc));
+                    let mut top = crate::vector::shapes_from_vector(proj, &comp, &src, segments.last().unwrap_or(&doc));
                     // Top to bottom: the last segment, image n, segment n − 1, … image 1, segment 0.
                     let mut stack = vec![];
                     for k in (0..segments.len().saturating_sub(1)).rev() {
@@ -142,9 +151,25 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                         sl.name = format!("{} {}", top.name, k + 1);
                         stack.push(sl);
                     }
+                    // A placed page shows only its frame (the footage's raster ends there): every
+                    // layer made from it takes a hidden frame layer as its track matte (#3099).
+                    let matte = crate::vector::frame_matte(proj, &comp, &src, &f);
+                    if let Some(m) = &matte {
+                        let tm = Some(TrackMatte { layer: m.id, kind: MatteKind::Alpha });
+                        top.track_matte = tm;
+                        for l in &mut stack {
+                            l.track_matte = tm;
+                        }
+                    }
                     let mut ids = vec![top.id];
                     ids.extend(stack.iter().filter(|l| matches!(l.source, LayerSource::Shape)).map(|l| l.id));
-                    // Each directly above the source: the top layer first.
+                    // The frame matte is made too (last: the selection stays on the top layer).
+                    ids.extend(matte.as_ref().map(|m| m.id));
+                    // Each directly above the source: the frame matte (when there is one) above
+                    // all, then the top layer first.
+                    if let Some(m) = matte {
+                        insert_above(proj, cid, lid, m, true)?;
+                    }
                     insert_above(proj, cid, lid, top, true)?;
                     for l in stack {
                         insert_above(proj, cid, lid, l, true)?;
@@ -205,7 +230,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                     skipped.push(format!("{}: not a Photoshop layer", src.name));
                     continue;
                 };
-                let bytes = s.services.read_file(&f.path).map_err(|e| EngineError::Other(format!("cannot read {}: {e}", f.path)))?;
+                let bytes = read_footage(s, &f).map_err(EngineError::Other)?;
                 let psd = effectcraft_psd::Psd::parse(bytes).map_err(|e| EngineError::Other(e.to_string()))?;
                 let id = s.edit("Convert to Editable Text", None, |proj, st| {
                     let mut l = crate::psd_import::editable_text(proj, &comp, &src, &psd, sl.index as usize)
@@ -236,13 +261,19 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
 fn image_footage(s: &mut Session, source: &str, n: usize, img: &crate::vector::VectorImage) -> Result<effectcraft_project::ItemId> {
     let src = std::path::Path::new(source);
     let stem = src.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| "Vector".into());
-    let name = format!("{stem} Image {n}.png");
-    let path = match src.parent().filter(|p| !p.as_os_str().is_empty()) {
+    let at = |name: String| match src.parent().filter(|p| !p.as_os_str().is_empty()) {
         Some(dir) => dir.join(&name).to_string_lossy().into_owned(),
         None => name,
     };
+    // A file already there (an earlier conversion, the user's own, footage) is never replaced:
+    // the next free name is taken, and `write_output` refuses files the project reads.
+    let protected = s.protected_files();
+    let path = (1..1000)
+        .map(|k| at(if k == 1 { format!("{stem} Image {n}.png") } else { format!("{stem} Image {n} ({k}).png") }))
+        .find(|p| !s.services.exists(p) && protected.find(std::path::Path::new(p)).is_none())
+        .ok_or_else(|| EngineError::Other(format!("no free name for {stem} Image {n}.png")))?;
     let png = super::comp_more::encode_png(&img.rgba, img.width, img.height).map_err(EngineError::Other)?;
-    s.services.write_file(&path, &png).map_err(|e| EngineError::Other(format!("cannot write {path}: {e}")))?;
+    s.write_output_with(&protected, &path, &png)?;
     let r = super::file::import(s, &json!({"paths": [path]}))?;
     if let Some(e) = r["errors"].as_array().and_then(|e| e.first()) {
         return Err(EngineError::Other(e.as_str().unwrap_or("import failed").to_string()));
@@ -272,4 +303,16 @@ fn insert_above(
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![cmd!("layer.create", "Create", [], None, "{op: editableText|shapesFromText|masksFromText|shapesFromVector|instance3d, layers?}", has_layers, create)]
+}
+
+/// The footage's file, read as the renderer may read it: never a file marked missing (a stored
+/// path the project may not follow, such as a share on another computer, is marked missing when
+/// the project opens), and a stored path through [`Session::stored_path`].
+fn read_footage(s: &Session, f: &effectcraft_project::Footage) -> std::result::Result<Vec<u8>, String> {
+    if f.missing {
+        return Err(format!("the footage file {} is missing", f.path));
+    }
+    let path = s.stored_path(&f.path).map_err(|why| format!("the footage file {} is not opened: {why}", f.path))?;
+    let path = path.to_str().ok_or_else(|| format!("{}: not a valid path", f.path))?;
+    s.services.read_file(path).map_err(|e| format!("cannot read {}: {e}", f.path))
 }

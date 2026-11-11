@@ -193,6 +193,13 @@ fn guard_of(g: &PropGroup) -> String {
     if is_object_matte(g) { om_prompt(g) } else { str_of(g, fx::STROKES) }
 }
 
+/// What a job's result is checked against when it ends: the guard and the Input Key (the source
+/// frames). A job started before the source was replaced, or before an undo restored it, no
+/// longer applies even when the strokes are the same.
+fn job_guard(g: &PropGroup) -> String {
+    format!("{}\u{1}{}", guard_of(g), str_of(g, INPUT_KEY))
+}
+
 fn str_of(g: &PropGroup, m: &str) -> String {
     match g.get(m).map(|p| &p.value) {
         Some(Value::Str(s)) => s.clone(),
@@ -741,7 +748,7 @@ impl Session {
             task,
             object_matte,
         };
-        let strokes = guard_of(g);
+        let strokes = job_guard(g);
         if !wait && self.offloads() {
             drop(work);
             self.offload_analysis(match task {
@@ -782,10 +789,11 @@ impl Session {
 
     /// Save the tracker's frames in the instance, unless its strokes changed while it tracked. No undo
     /// step: the frames are a cache of the strokes and the span (a stale copy is ignored).
+    /// Through [`crate::commands::layer_mut`]: a layer in a locked folder is left alone.
     fn save_tracks(&mut self, cid: ItemId, lid: LayerId, uid: Uid, strokes: &str, json: String) {
         let p = Arc::make_mut(&mut self.project);
-        if let Some(g) = p.comp_mut(cid).and_then(|c| c.layer_mut(lid)).and_then(|l| l.props.find_group_mut(uid))
-            && guard_of(g) == strokes
+        if let Some(g) = crate::commands::layer_mut(p, cid, lid).ok().and_then(|l| l.props.find_group_mut(uid))
+            && job_guard(g) == strokes
         {
             set_str(g, TRACKED, json);
         }
@@ -816,10 +824,38 @@ impl Session {
         match job.task {
             RotoTask::Propagate => {
                 let verb = if job.object_matte { "tracked" } else { "propagated" };
-                self.events.push(Event::Toast { message: format!("{name}: {verb} {} frame(s) in {:.1} s", st.done, st.elapsed), error: false });
-                // The frames the tracker followed are saved with the instance.
-                if let Some(json) = lock(&job.shared.saved).take() {
+                // The frames the tracker followed are saved with the instance. A folder locked
+                // while it ran keeps them out, as Freeze does: the end is an error and the
+                // instance is queued again (`poll_roto` holds it until the folder is unlocked).
+                // Without tracking to save (the classic engine, Object Matte) the layer is not
+                // changed, so the lock does not matter.
+                let json = lock(&job.shared.saved).take();
+                // Only a job that still applies (its effect there, from the same strokes or prompt
+                // and source) saves or reports; an obsolete one ends quietly, without a message:
+                // every new stroke while it runs makes it obsolete.
+                let applies = self
+                    .project
+                    .comp(job.comp)
+                    .and_then(|c| c.layer(job.layer))
+                    .and_then(|l| l.props.find_group(job.effect))
+                    .is_some_and(|g| job_guard(g) == job.strokes);
+                let locked = applies && json.is_some() && self.project.comp(job.comp).is_some_and(|c| crate::commands::locked_by_group(c, job.layer));
+                let key = (job.comp, job.layer, job.effect);
+                if locked && !self.roto_pending.contains(&key) {
+                    self.roto_pending.push(key);
+                }
+                if applies
+                    && !locked
+                    && let Some(json) = json
+                {
                     self.save_tracks(job.comp, job.layer, job.effect, &job.strokes, json);
+                }
+                if locked {
+                    let message = format!("{name}: the layer's group was locked while it ran; its tracking was not saved");
+                    self.events.push(Event::Toast { message, error: true });
+                } else if applies {
+                    let message = format!("{name}: {verb} {} frame(s) in {:.1} s", st.done, st.elapsed);
+                    self.events.push(Event::Toast { message, error: false });
                 }
                 // Rendered frames depend on the cache: redraw.
                 self.bump();
@@ -833,8 +869,8 @@ impl Session {
                         .props
                         .find_group_mut(uid)
                         .ok_or_else(|| crate::EngineError::Other(format!("the {name} effect was removed")))?;
-                    if guard_of(g) != strokes {
-                        return Err(crate::EngineError::Other(format!("the {what} changed while freezing")));
+                    if job_guard(g) != strokes {
+                        return Err(crate::EngineError::Other(format!("the {what} or the layer's source changed while freezing")));
                     }
                     set_str(g, FROZEN, fc.to_json());
                     Ok(())

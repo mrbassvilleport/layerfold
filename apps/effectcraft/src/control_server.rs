@@ -66,8 +66,12 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
 
 /// The socket, readable only until the deadline while `proved` is false. The time left is set again
 /// before every read, so sending a byte at a time can't extend it.
+///
+/// It borrows the connection instead of holding a `try_clone`: on Windows a duplicated socket is
+/// inheritable, so every child process started meanwhile (an export, the crash reporter) would keep
+/// the connection open after the server closes it, and reset it when the child exits.
 struct PreAuthRead<'a> {
-    stream: TcpStream,
+    stream: &'a TcpStream,
     started: Instant,
     deadline: Duration,
     proved: &'a AtomicBool,
@@ -85,7 +89,7 @@ impl Read for PreAuthRead<'_> {
             Some(left)
         };
         self.stream.set_read_timeout(timeout)?;
-        self.stream.read(buf)
+        (&*self.stream).read(buf)
     }
 }
 
@@ -95,10 +99,9 @@ fn same_token(a: &str, b: &str) -> bool {
 }
 
 fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str, deadline: Duration) {
-    let Ok(read) = stream.try_clone() else { return };
     let proved = AtomicBool::new(false);
-    let read = PreAuthRead { stream: read, started: Instant::now(), deadline, proved: &proved };
-    serve_lines(read, stream, Some((token, &proved)), |method, params| {
+    let read = PreAuthRead { stream: &stream, started: Instant::now(), deadline, proved: &proved };
+    serve_lines(read, &stream, Some((token, &proved)), |method, params| {
         let (req, rrx) = ControlRequest::new(method, params);
         tx.send(req).ok()?;
         ctx.request_repaint();
@@ -332,8 +335,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
-            let read = s.try_clone().unwrap();
-            serve_lines(read, s, None, |_, _| Some(json!({"ok": true})));
+            serve_lines(&s, &s, None, |_, _| Some(json!({"ok": true})));
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -400,8 +402,8 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
             let proved = AtomicBool::new(false);
-            let read = PreAuthRead { stream: s.try_clone().unwrap(), started: Instant::now(), deadline: Duration::from_millis(200), proved: &proved };
-            serve_lines(read, s, Some(("secret", &proved)), |_, _| Some(json!({"ok": true})));
+            let read = PreAuthRead { stream: &s, started: Instant::now(), deadline: Duration::from_millis(200), proved: &proved };
+            serve_lines(read, &s, Some(("secret", &proved)), |_, _| Some(json!({"ok": true})));
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();

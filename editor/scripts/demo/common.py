@@ -6,7 +6,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 WORK = REPO / "editor" / "output" / "public" / "demo"
 SNAPSHOT = REPO / "editor" / "target" / "release" / "examples" / "snapshot.exe"
-CLI = REPO / "editor" / "target" / "release" / "effectcraft-cli.exe"
+# EFFECTCRAFT_DEMO_CLI: another build of the CLI, for when the release one is held open (an MCP
+# server of an agent session runs it) and cannot be rebuilt.
+CLI = Path(__import__("os").environ.get("EFFECTCRAFT_DEMO_CLI") or REPO / "editor" / "target" / "release" / "effectcraft-cli.exe")
 
 
 def ease_in_out(t):

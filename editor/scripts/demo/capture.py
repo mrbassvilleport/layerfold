@@ -31,23 +31,17 @@ class Film:
         self.dir = WORK / name
         shutil.rmtree(self.dir, ignore_errors=True)
         self.dir.mkdir(parents=True)
-        self.steps = [cmd("file.open", path=str(WORK / "scene.ecproj"))]
-        self.done = []
-        self.head = 1
-        self.frames = []
         self.pos = start
+        # Clip thumbnails decode in the background: on a GPU the first shots come before they land
+        # and show a grey strip. A still pointer after opening gives them time.
+        self.steps = [cmd("file.open", path=str(WORK / "scene.ecproj")), {"method": "pointer", "params": {"x": start[0], "y": start[1], "settle": 3.0}}]
+        self.frames = []
         self.hint = None
         self.shots = 0
         self.last = None
 
     def setup(self, *steps):
         self.steps.extend(steps)
-        self.head = len(self.steps)
-
-    def restart(self, *replay):
-        """The rest of the film runs in a fresh app, brought back to this state by `replay`."""
-        self.done.append(self.steps)
-        self.steps = self.steps[: self.head] + list(replay)
 
     def shot(self):
         path = self.dir / f"s{self.shots:04}.png"
@@ -112,10 +106,9 @@ class Film:
         self.frame()
 
     def film(self):
-        for steps in self.done + [self.steps]:
-            for r in snapshot(steps, settle=6.0):
-                if isinstance(r.get("reply"), dict) and r["reply"].get("ok") is False:
-                    print("step failed:", r)
+        for r in snapshot(self.steps, settle=6.0):
+            if isinstance(r.get("reply"), dict) and r["reply"].get("ok") is False:
+                print("step failed:", r)
         self.assemble()
 
     def assemble(self):
@@ -194,8 +187,9 @@ def time_at(seconds):
 
 
 def slip():
-    # The timeline only, playhead before the clips: repeated slips of a clip in the viewer make the
-    # headless GPU wait time out, cause unknown. The clip's frames on its bar show the slip.
+    # The timeline only, playhead before the clips: no new frame to composite. This dates from when the
+    # headless app ran on WARP, where the GPU compositor's first frame never finishes; `snapshot` now picks
+    # a hardware GPU, so the viewer could come back. The clip's frames on its bar show the slip.
     f = Film("slip", TIMELINE)
     f.begin(0.8)
     f.go((tx(4.0), ROW["Dawn"]), 0.8)
@@ -211,20 +205,7 @@ def slip():
     f.film()
 
 
-def pointer_drag(a, b, n=6, release=True):
-    """The same drag without any shots, to bring a restarted app back to a state."""
-    steps = [{"method": "pointer", "params": {"x": a[0], "y": a[1], "press": True, "settle": 0.06}}]
-    for i in range(1, n + 1):
-        k = i / n
-        steps.append({"method": "pointer", "params": {"x": a[0] + (b[0] - a[0]) * k, "y": a[1] + (b[1] - a[1]) * k, "settle": 0.06}})
-    if release:
-        steps.append({"method": "pointer", "params": {"x": b[0], "y": b[1], "release": True, "settle": 0.3}})
-    return steps
-
-
 def groups():
-    # A drop after a long run of shots makes the headless GPU wait time out, so each drop starts a
-    # fresh app. The cause is not known; short scripts with the same drop pass.
     f = Film("groups", FULL)
     f.setup(time_at(3.5))
     f.begin(0.8)
@@ -243,12 +224,10 @@ def groups():
     f.say("Drag a layer in or out of a group")
     f.go((190, ROW["Caption"]), 0.7)
     f.drag((190, 707), 0.9)
-    f.restart(*pointer_drag((190, ROW["Caption"]), (190, 707), release=False))
     f.release()
     f.hold(1.0)
     f.go((190, 697), 0.3)
     f.drag((190, TITLES_ROW), 0.9)
-    f.restart(*pointer_drag((190, ROW["Caption"]), (190, 707)), *pointer_drag((190, 697), (190, TITLES_ROW), release=False))
     f.release()
     f.say(None)
     f.go((1000, 780), 0.7)

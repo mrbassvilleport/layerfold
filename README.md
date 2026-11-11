@@ -11,7 +11,7 @@
 
 ## What it adds
 
-Layerfold is EffectCraft 0.22.0 with changes to how the timeline works. Compositions, the 308 effects, 3D,
+Layerfold is EffectCraft 0.23.1 with changes to how the timeline works. Compositions, the 308 effects, 3D,
 expressions and export all come from EffectCraft. The animations below were filmed from the program
 itself, with only the cursor and the caption added on top. [CHANGES.md](CHANGES.md) has the full list.
 

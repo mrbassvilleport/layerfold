@@ -4,8 +4,12 @@
 //!
 //! ```text
 //! cargo run -p effectcraft-ui-egui --example snapshot -- [--out ui.png] [--size 1680x1020]
-//!     [--scale 2] [--settle 1.5] [--empty] [--script steps.jsonl | --step '<json>']...
+//!     [--scale 2] [--settle 1.5] [--empty] [--software] [--script steps.jsonl | --step '<json>']...
 //! ```
+//!
+//! The UI and the compositor run on a hardware GPU when there is one. `--software` keeps
+//! egui_kittest's own choice, a software rasterizer (WARP on Windows), on which the
+//! compositor's first frame does not finish.
 //!
 //! Each script step is a control-channel request (`{"method":"engine.execute","params":{...}}`,
 //! see `docs/control-protocol.md`), run in order with the app settling in between. The extra
@@ -25,11 +29,12 @@ struct Args {
     scale: f32,
     settle: f64,
     demo: bool,
+    software: bool,
     steps: Vec<Value>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args { out: "ui.png".into(), size: (1680.0, 1020.0), scale: 2.0, settle: 1.5, demo: true, steps: Vec::new() };
+    let mut a = Args { out: "ui.png".into(), size: (1680.0, 1020.0), scale: 2.0, settle: 1.5, demo: true, software: false, steps: Vec::new() };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().ok_or_else(|| format!("{arg} needs a value"));
@@ -43,6 +48,7 @@ fn parse_args() -> Result<Args, String> {
             "--scale" => a.scale = val()?.parse().map_err(|_| "bad --scale")?,
             "--settle" => a.settle = val()?.parse().map_err(|_| "bad --settle")?,
             "--empty" => a.demo = false,
+            "--software" => a.software = true,
             "--step" => a.steps.push(serde_json::from_str(&val()?).map_err(|e| format!("--step: {e}"))?),
             "--script" => {
                 let path = val()?;
@@ -52,7 +58,9 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "-h" | "--help" => {
-                return Err("usage: snapshot [--out ui.png] [--size WxH] [--scale 2] [--settle secs] [--empty] [--script f.jsonl | --step json]...".into());
+                return Err(
+                    "usage: snapshot [--out ui.png] [--size WxH] [--scale 2] [--settle secs] [--empty] [--software] [--script f.jsonl | --step json]...".into(),
+                );
             }
             _ => return Err(format!("unknown argument {arg}")),
         }
@@ -86,6 +94,32 @@ fn snap(h: &mut Harness<'_, EffectcraftApp>, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// egui_kittest prefers a CPU adapter so test images match across machines. On Windows that is
+/// WARP, where the compositor's blend kernels never finish their first dispatch and filming
+/// hangs. The viewer composites on the harness's own device, so picking it here is enough.
+fn hardware_setup() -> eframe::egui_wgpu::WgpuSetup {
+    let mut setup = egui_kittest::wgpu::default_wgpu_setup();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut setup {
+        let fallback = c.native_adapter_selector.take();
+        c.native_adapter_selector = Some(std::sync::Arc::new(move |adapters, surface| {
+            use eframe::wgpu::DeviceType;
+            let rank = |t: DeviceType| match t {
+                DeviceType::DiscreteGpu => Some(0),
+                DeviceType::IntegratedGpu => Some(1),
+                DeviceType::VirtualGpu => Some(2),
+                DeviceType::Other | DeviceType::Cpu => None,
+            };
+            let best = adapters.iter().filter_map(|a| rank(a.get_info().device_type).map(|r| (r, a))).min_by_key(|(r, _)| *r);
+            match (best, &fallback) {
+                (Some((_, a)), _) => Ok(a.clone()),
+                (None, Some(f)) => f(adapters, surface),
+                (None, None) => adapters.first().cloned().ok_or_else(|| "No adapter found".to_owned()),
+            }
+        }));
+    }
+    setup
+}
+
 fn main() {
     let args = match parse_args() {
         Ok(a) => a,
@@ -99,11 +133,9 @@ fn main() {
         let _ = session.execute("file.openDemoProject", json!({}));
     }
     let (tx, rx) = mpsc::channel::<ControlRequest>();
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(args.size.0, args.size.1))
-        .with_pixels_per_point(args.scale)
-        .wgpu()
-        .build_eframe(move |_cc| EffectcraftApp::new(session).with_control(rx));
+    let builder = Harness::builder().with_size(egui::vec2(args.size.0, args.size.1)).with_pixels_per_point(args.scale);
+    let builder = if args.software { builder.wgpu() } else { builder.wgpu_setup(hardware_setup()) };
+    let mut harness = builder.build_eframe(move |_cc| EffectcraftApp::new(session).with_control(rx));
     // A real window has no painted pointer either; the demos draw their own over these images.
     harness.set_render_cursor(false);
     settle(&mut harness, args.settle);
@@ -162,6 +194,8 @@ fn main() {
         settle(&mut harness, 0.3);
     }
     settle(&mut harness, args.settle.min(1.0));
+    // stderr, so scripts reading the JSON replies on stdout are unaffected.
+    eprintln!("snapshot: GPU compositor {}", harness.state().gpu_adapter().unwrap_or_else(|| "not ready (CPU frames)".into()));
     if let Err(e) = snap(&mut harness, &args.out) {
         eprintln!("{e}");
         std::process::exit(1);

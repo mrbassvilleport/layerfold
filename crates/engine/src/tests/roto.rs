@@ -330,6 +330,139 @@ fn freeze_caches_the_mattes() {
     assert_eq!(s.execute("roto.status", json!({"layer": clip.0, "effect": uid})).unwrap()["frozen"], false);
 }
 
+/// A folder locked while a tracker propagates keeps its tracking out of the layer: the end is an
+/// error, and the instance propagates again once the folder is unlocked.
+#[test]
+fn propagation_finishing_in_a_locked_folder_saves_nothing() {
+    let (mut s, clip, uid) = painted(center, "disk-locked-propagate.mov");
+    effectcraft_effects::roto::set_model(Some(std::sync::Arc::new(Exact)));
+    s.execute("roto.span", json!({"layer": clip.0, "end": 3})).unwrap();
+    s.execute("roto.propagate", json!({"layer": clip.0})).unwrap();
+    // Only `poll_roto` finishes a job: the lock below lands before the end is handled.
+    assert!(s.roto_job.is_some(), "still running");
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    s.drain_events();
+    let before = format!("{:?}", s.active_comp().unwrap().layer(clip).unwrap().props);
+    let t0 = std::time::Instant::now();
+    while s.roto_job.is_some() {
+        assert!(t0.elapsed().as_secs() < 300);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_roto(false);
+    }
+    let events = s.drain_events();
+    assert!(events.iter().any(|e| matches!(e, crate::Event::Toast { error: true, message } if message.contains("locked"))), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, crate::Event::Toast { error: false, message } if message.contains("propagated"))), "{events:?}");
+    assert_eq!(format!("{:?}", s.active_comp().unwrap().layer(clip).unwrap().props), before);
+    let cid = s.active_comp_id().unwrap();
+    assert!(s.roto_pending.contains(&(cid, clip, uid)), "queued again");
+    // Unlocked: the queued propagation runs and saves its tracking.
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": false})).unwrap();
+    assert!(s.poll_roto(true) || s.roto_job.is_some(), "started again");
+    let t0 = std::time::Instant::now();
+    while s.roto_job.is_some() {
+        assert!(t0.elapsed().as_secs() < 300);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_roto(false);
+    }
+    effectcraft_effects::roto::set_model(None);
+    let st = s.execute("roto.status", json!({"layer": clip.0, "effect": uid, "frame": 2})).unwrap();
+    assert!(!st["tracker"]["saved"].is_null(), "{st}");
+}
+
+/// A propagation whose source changed while it ran (the Input Key moved) saves nothing and ends
+/// without a success.
+#[test]
+fn propagation_whose_source_changed_saves_nothing() {
+    let (mut s, clip, uid) = painted(center, "disk-source-propagate.mov");
+    effectcraft_effects::roto::set_model(Some(std::sync::Arc::new(Exact)));
+    s.execute("roto.span", json!({"layer": clip.0, "end": 3})).unwrap();
+    s.execute("roto.propagate", json!({"layer": clip.0})).unwrap();
+    assert!(s.roto_job.is_some(), "still running");
+    let cid = s.active_comp_id().unwrap();
+    s.edit("move", None, |p, _| {
+        p.comp_mut(cid).unwrap().layer_mut(clip).unwrap().start_time = frame_time(1);
+        Ok(())
+    })
+    .unwrap();
+    s.drain_events();
+    let t0 = std::time::Instant::now();
+    while s.roto_job.is_some() {
+        assert!(t0.elapsed().as_secs() < 300);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_roto(false);
+    }
+    effectcraft_effects::roto::set_model(None);
+    let events = s.drain_events();
+    assert!(!events.iter().any(|e| matches!(e, crate::Event::Toast { message, .. } if message.contains("propagated"))), "{events:?}");
+    let st = s.execute("roto.status", json!({"layer": clip.0, "effect": uid, "frame": 2})).unwrap();
+    assert!(st["tracker"]["saved"].is_null(), "{st}");
+}
+
+/// Object Matte saves no tracking of its own: a folder locked while it runs changes nothing in
+/// the layer, so the end is the usual success, not an error contradicting the matte shown.
+#[test]
+fn object_matte_finishing_in_a_locked_folder_keeps_its_result() {
+    hold_roto_cache_test_lock();
+    let (mut s, clip, solid) = setup(|f| draw(center(f)));
+    let cid = s.active_comp_id().unwrap();
+    s.edit("remove solid", None, |p, _| {
+        p.comp_mut(cid).unwrap().layers.retain(|l| l.id != solid);
+        for it in p.items.values_mut() {
+            if let effectcraft_project::ItemKind::Footage(f) = &mut it.kind {
+                f.path = "object-matte-lock-end.mov".into();
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.execute_checked("objectMatte.apply", json!({"layer": clip.0, "point": center(0), "before": 0, "after": 3, "frame": 0})).unwrap();
+    s.poll_roto(true);
+    assert!(s.roto_job.is_some(), "the edit started a propagation");
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    s.drain_events();
+    let t0 = std::time::Instant::now();
+    while s.roto_job.is_some() {
+        assert!(t0.elapsed().as_secs() < 300);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_roto(false);
+    }
+    let events = s.drain_events();
+    assert!(!events.iter().any(|e| matches!(e, crate::Event::Toast { error: true, .. })), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, crate::Event::Toast { error: false, message } if message.contains("tracked"))), "{events:?}");
+}
+
+/// A propagation whose effect was removed while it ran ends quietly: neither a success nor a lock
+/// error for something that no longer applies.
+#[test]
+fn propagation_of_a_removed_effect_reports_neither_success_nor_a_lock() {
+    let (mut s, clip, uid) = painted(center, "disk-removed-propagate.mov");
+    s.execute("roto.span", json!({"layer": clip.0, "end": 3})).unwrap();
+    s.execute("roto.propagate", json!({"layer": clip.0})).unwrap();
+    assert!(s.roto_job.is_some(), "still running");
+    let cid = s.active_comp_id().unwrap();
+    s.edit("remove the effect", None, |p, _| {
+        let fx = p.comp_mut(cid).unwrap().layer_mut(clip).unwrap().props.sub_mut("effects").unwrap();
+        fx.children.retain(|n| !matches!(n, effectcraft_project::Node::Group(g) if g.uid == uid));
+        Ok(())
+    })
+    .unwrap();
+    let group = s.execute("layer.group", json!({"layers": [clip.0]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    s.drain_events();
+    let t0 = std::time::Instant::now();
+    while s.roto_job.is_some() {
+        assert!(t0.elapsed().as_secs() < 300);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.poll_roto(false);
+    }
+    let events = s.drain_events();
+    // No message at all: a new stroke restarts propagation the same way, and painting must not
+    // report something after every stroke.
+    assert!(!events.iter().any(|e| matches!(e, crate::Event::Toast { .. })), "{events:?}");
+}
+
 #[test]
 fn propagation_is_deterministic_and_runs_in_background() {
     let (mut s, clip, uid) = painted(center, "disk-bg.mov");

@@ -133,6 +133,27 @@ fn instance3d_creates_a_2d_copy_of_the_model() {
     assert!(p[2] > 0.9 && p[0] < 0.1, "the fill recolours the copy: {p:?}");
 }
 
+/// A model inside a folder keeps its copy in that folder, right above it: the folder's Video
+/// still hides it.
+#[test]
+fn instance3d_of_a_model_in_a_folder_stays_in_that_folder() {
+    let mut s = session();
+    let model = triangle_model(&mut s);
+    let above = s.execute("layer.newSolid", json!({"color": "#808080", "width": 10, "height": 10})).unwrap()["layer"].as_u64().unwrap();
+    let group = s.execute("layer.group", json!({"layers": [above, model]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "video": false})).unwrap();
+    let r = s.execute("layer.create", json!({"op": "instance3d", "layers": [model]})).unwrap();
+    let solid = LayerId(r["layers"][0].as_u64().unwrap());
+    let comp = s.active_comp().unwrap();
+    assert_eq!(comp.layer_group(solid).map(|g| g.id), Some(group));
+    assert!(!comp.layer_effectively_visible(solid), "the hidden folder hides the copy");
+    let at = |id: LayerId| comp.layers.iter().position(|l| l.id == id).unwrap();
+    // At the top of the folder, as After Effects puts it at the top of the comp: a 2D copy between
+    // the folder's 3D layers would split their depth-sorted run.
+    assert_eq!(at(solid) + 1, at(LayerId(above)), "at the top of the folder");
+    assert!(at(LayerId(above)) < at(LayerId(model)));
+}
+
 #[test]
 fn instance3d_also_takes_3d_primitives() {
     let mut s = session();

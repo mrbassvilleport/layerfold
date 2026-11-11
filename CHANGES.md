@@ -1,7 +1,7 @@
 # What Layerfold changes in EffectCraft
 
-Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.22.0, tag `v0.22.0`,
-commit `42e3c6a6c119d973aa59ab0437487ea6cae6a15d`. This file lists how it differs. It also serves as
+Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.23.1, tag `v0.23.1`,
+commit `f5e5c8a4d8e0d5aa7e5493b527c0773969a4364a`. This file lists how it differs. It also serves as
 the notice of modified files that the Apache-2.0 license asks for. To see every changed line, compare
 this repository with that tag. Most of the changes are in `crates/ui-egui/`, `crates/engine/`,
 `crates/project/` and `editor/`.
@@ -24,6 +24,12 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
 - Rendering, solo, export (layered frames, Lottie, FCP XML, FCPXML, OTIO) and the `active`, `hasVideo`
   and `audioActive` values in expressions and scripts take groups into account.
 - Precompose takes layers from one group level only, and the new layer takes their place in the group.
+- Un-precompose puts the unpacked layers in the pre-comp layer's groups. It refuses a locked group, and
+  warns before dropping groups inside the nested composition that hide, mute or lock layers.
+- Create 3D Layer Instance puts the copy of a model that sits in a group at the top of that group, so
+  the group's switches apply to it.
+- Roto Brush and Object Matte that finish while the layer's group is locked keep the layer unchanged;
+  tracking that couldn't be saved runs again once the group is unlocked.
 
 ## Timeline editing
 
@@ -64,6 +70,8 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
   which made CPU and GPU results differ, and path and rounding assumptions in tests.
 - Font fallback for Arabic, Hebrew, Indic, Thai and CJK text no longer lets a loaded third-party font
   replace the system family (`crates/text/src/fonts.rs`).
+- The control channel's connection is no longer inherited by child processes such as the crash
+  reporter, which kept a client from seeing the connection close (`apps/effectcraft/src/control_server.rs`).
 
 ## Name and identity
 
@@ -91,6 +99,9 @@ a script can still write and read files through other commands, even with its pe
   your user, and closes a connection that doesn't send it within 10 seconds. See
   `docs/control-protocol.md`.
 - `editor/scripts/setup.ps1` checks the hash of the Rust installer it downloads.
+- Layer ▸ Create (Shapes from Vector, Editable Text) no longer reads footage marked missing, and follows
+  stored paths by the same rule as the rest of the project. Images it extracts from a vector file take
+  a free name beside the source instead of replacing a file there.
 
 ## Added files
 

@@ -9,6 +9,9 @@ use crate::{Event, Services, Session};
 #[derive(Default)]
 struct Recording(Mutex<Vec<String>>);
 
+/// The address the tests store as "another computer" (TEST-NET-1, never routed).
+const FAR_HOST: &str = "192.0.2.1";
+
 impl Recording {
     fn note(&self, path: &str) {
         self.0.lock().unwrap().push(path.to_string());
@@ -18,6 +21,10 @@ impl Recording {
 impl Services for Recording {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
         self.note(path);
+        // A regression would wait on the network: fail at once, the assertions report it.
+        if path.contains(FAR_HOST) {
+            return Err(std::io::ErrorKind::NotFound.into());
+        }
         std::fs::read(path)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
@@ -25,10 +32,13 @@ impl Services for Recording {
     }
     fn exists(&self, path: &str) -> bool {
         self.note(path);
-        std::path::Path::new(path).exists()
+        !path.contains(FAR_HOST) && std::path::Path::new(path).exists()
     }
     fn stamp(&self, path: &str) -> Option<(u64, u128)> {
         self.note(path);
+        if path.contains(FAR_HOST) {
+            return None;
+        }
         let meta = std::fs::metadata(path).ok()?;
         Some((meta.len(), meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()))
     }
@@ -157,6 +167,37 @@ fn imported_timeline_is_held_to_the_same_rule() {
     let seen = rec.0.lock().unwrap().clone();
     assert!(!seen.iter().any(|p| p.contains("192.0.2.1")), "{seen:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Layer ▸ Create reads a vector or Photoshop file itself: footage marked missing (as a path on
+/// another computer is when the project opens) is refused without asking for the file.
+#[test]
+fn layers_made_from_footage_on_another_computer_never_read_it() {
+    let rec = Arc::new(Recording::default());
+    let mut s = Session { services: rec.clone(), ..Default::default() };
+    s.execute("comp.new", json!({"name": "Main", "width": 64, "height": 48, "frameRate": 25, "duration": 1})).unwrap();
+    let add = |s: &mut Session, f: Footage| {
+        let id = Arc::make_mut(&mut s.project).add_item("far", crate::color::Label::None, None, ItemKind::Footage(f));
+        s.execute("layer.addItem", json!({"item": id.0})).unwrap()["layer"].as_u64().unwrap()
+    };
+    let base = Footage { width: 64, height: 48, has_video: true, missing: true, ..Default::default() };
+    let svg = add(&mut s, Footage { path: r"\\192.0.2.1\share\logo.svg".into(), ..base.clone() });
+    let e = s.execute("layer.create", json!({"op": "shapesFromVector", "layers": [svg]})).unwrap_err().to_string();
+    assert!(e.contains("missing"), "{e}");
+    let layer = effectcraft_project::SourceLayer { index: 0, name: "Title".into(), ..Default::default() };
+    let psd = add(&mut s, Footage { path: r"\\192.0.2.1\share\title.psd".into(), layer: Some(layer), ..base });
+    let e = s.execute("layer.create", json!({"op": "editableText", "layers": [psd]})).unwrap_err().to_string();
+    assert!(e.contains("missing"), "{e}");
+    // Not marked missing but stored by a document that may not follow it: refused as well.
+    let far = r"\\192.0.2.1\share\badge.svg";
+    let doc = std::env::temp_dir().join("ec-doc-path-create").join("p.ecproj");
+    s.stored_paths.add_path(far, Some(&doc.to_string_lossy()));
+    assert!(s.stored_paths.follow(far).is_err(), "the fixture is a refused stored path");
+    let svg = add(&mut s, Footage { path: far.into(), width: 64, height: 48, has_video: true, ..Default::default() });
+    let e = s.execute("layer.create", json!({"op": "shapesFromVector", "layers": [svg]})).unwrap_err().to_string();
+    assert!(e.contains("not opened"), "{e}");
+    let seen = rec.0.lock().unwrap().clone();
+    assert!(!seen.iter().any(|p| p.contains("192.0.2.1")), "{seen:?}");
 }
 
 /// Footage paths to other computers stored in a project are never looked at: not on open, by
