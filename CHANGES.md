@@ -1,7 +1,7 @@
 # What Layerfold changes in EffectCraft
 
-Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.23.1, tag `v0.23.1`,
-commit `f5e5c8a4d8e0d5aa7e5493b527c0773969a4364a`. This file lists how it differs. It also serves as
+Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.24.1, tag `v0.24.1`,
+commit `582344dd4ef462362c02e56e3094de7af01847ab`. This file lists how it differs. It also serves as
 the notice of modified files that the Apache-2.0 license asks for. To see every changed line, compare
 this repository with that tag. Most of the changes are in `crates/ui-egui/`, `crates/engine/`,
 `crates/project/` and `editor/`.
@@ -45,8 +45,9 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
   for the timeline, and the layer switch `frames` turns them off for one layer. The second is saved in
   the project and is part of Undo.
 - Shift snaps keyframes and layer edges to the playhead, other keyframes, layer edges and group edges
-  within 8 pixels, with a line and a label for the target. In the graph editor it works with the
-  Snap button off.
+  within 8 pixels, with a line and a label for the target. EffectCraft 0.24 snaps a dragged layer bar
+  with Shift too; group edges and the label are Layerfold's, and here only targets on screen count. In
+  the graph editor it works with the Snap button off.
 - The middle mouse button pans the timeline through time and through the rows.
 - Alt+click picks the active layer of a selection, in the timeline and in the viewer. A new group
   gathers around it (`layer.setActive`).
@@ -59,7 +60,8 @@ this repository with that tag. Most of the changes are in `crates/ui-egui/`, `cr
 
 ## Playback
 
-- Audio switches and solo can be changed during playback.
+- A group's Audio switch can be changed during playback, as EffectCraft 0.24 allows for a layer's own
+  Audio and Solo switches.
 
 ## Windows
 

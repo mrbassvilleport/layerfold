@@ -6,7 +6,7 @@ use effectcraft_project::{FrameBlend, GroupKind, ItemId, LayerId, LayerSource, M
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, b_p, bad, comp_id, f_p, frontend, has_comp, has_layers, layer_mut, layer_p, layers_p, merge_p, str_p, time_p};
+use super::{CommandSpec, b_p, bad, comp_id, f_p, frontend, group_unlocked, has_comp, has_layers, layer_mut, layer_p, layers_p, merge_p, str_p, time_p};
 use crate::{EngineError, Result, Session, cmd};
 
 // ---------------------------------------------------------------- enablement
@@ -54,6 +54,8 @@ fn has_multiple_layers(s: &Session) -> std::result::Result<(), String> {
 
 fn quality(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    // A locked folder holds these Switches-column settings, like `layer.setSwitch`.
+    let ids = group_unlocked(s, cid, ids, "layer.quality")?;
     let q = match str_p(p, "quality").unwrap_or("best").to_ascii_lowercase().as_str() {
         "best" => Quality::Best,
         "draft" => Quality::Draft,
@@ -71,6 +73,7 @@ fn quality(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn sampling(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, "layer.sampling")?;
     let q = match str_p(p, "sampling").unwrap_or("bilinear").to_ascii_lowercase().as_str() {
         "bilinear" => Sampling::Bilinear,
         "bicubic" => Sampling::Bicubic,
@@ -94,6 +97,7 @@ fn sampling(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn frame_blending(s: &mut Session, p: &Value) -> Result<Value> {
     let (cid, ids) = layers_p(s, p)?;
+    let ids = group_unlocked(s, cid, ids, "layer.frameBlending")?;
     let m = match str_p(p, "mode").unwrap_or("off") {
         "off" => FrameBlend::Off,
         "frameMix" => FrameBlend::FrameMix,

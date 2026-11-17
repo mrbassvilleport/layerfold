@@ -2,7 +2,7 @@ use super::{EngineError, Event, Result, Session, Value, commands, guard};
 
 /// Commands that write files named by these parameters. A script may use them only with Settings ▸
 /// Scripting & Expressions ▸ Allow Scripts to Write Files and Access Network on, except for saving
-/// a project file ([`Session::refuse_script_write`]). `camera.exportBlender` checks for itself.
+/// a project file ([`Session::refuse_script_command`]). `camera.exportBlender` checks for itself.
 pub const SCRIPT_WRITES: &[(&str, &[&str])] = &[
     ("file.save", &["path"]),
     ("file.saveAs", &["path"]),
@@ -11,6 +11,8 @@ pub const SCRIPT_WRITES: &[(&str, &[&str])] = &[
     ("file.collectFiles", &["folder"]),
     ("file.exportLottie", &["path"]),
     ("file.exportAep", &["path"]),
+    ("journal.export", &["path"]),
+    ("help.exportRepro", &["path"]),
     ("file.exportTimeline", &["path"]),
     ("file.createProxy", &["path", "output"]),
     ("comp.saveFrameAs", &["path"]),
@@ -37,7 +39,7 @@ impl Session {
             return Err(EngineError::Other(crate::scriptui::RENDER_WAIT_MESSAGE.into()));
         }
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
-        self.refuse_script_write(id, &params)?;
+        self.refuse_script_command(id, &params)?;
         if let Err(why) = (spec.enabled)(self) {
             // Explicit targets (agents, scripts) don't need a UI selection.
             let explicit = (["layer", "layers", "prop", "keys"].iter().any(|k| params.get(k).is_some()) && commands::has_comp(self).is_ok())
@@ -49,11 +51,21 @@ impl Session {
             }
         }
         // Last-resort guard: a panicking command reports an error instead of crashing the app.
-        let r = guard::guarded(&format!("command `{id}`"), || (spec.run)(self, &params))?;
+        let nesting = crate::replay::Nesting::enter(spec.journal);
+        let caught = guard::caught();
+        let r = guard::guarded(&format!("command `{id}`"), || (spec.run)(self, &params));
+        let r = crate::replay::after_command(self, id, &params, &nesting, caught, r)?;
         self.sanitize_active_layer();
         self.learn_observe(id, &params);
-        if spec.journal {
-            self.journal.push((id.to_string(), params));
+        if spec.journal && !nesting.inside_journaled() {
+            // Revert and Open Recent resolve a file the parameters may not name. Store
+            // the successful read as an explicit open boundary while its resolved path is known.
+            let entry = if matches!(id, "file.revert" | "file.openRecent") {
+                self.path.as_ref().map(|path| ("file.open".to_string(), serde_json::json!({"path": path})))
+            } else {
+                None
+            };
+            self.journal.push(entry.unwrap_or_else(|| (id.to_string(), params)));
             if self.journal.len() > 10_000 {
                 self.journal.drain(..1000);
             }
@@ -84,7 +96,7 @@ impl Session {
     /// exception is a project file: its extension can't start anything, and saving is what the
     /// scripting API promises. Without this a script could put a text file anywhere, such as a
     /// batch file in the Startup folder.
-    fn refuse_script_write(&self, id: &str, params: &Value) -> Result<()> {
+    fn refuse_script_command(&self, id: &str, params: &Value) -> Result<()> {
         if !self.running_for_script() || self.prefs.scripting.allow_scripts_write_files {
             return Ok(());
         }

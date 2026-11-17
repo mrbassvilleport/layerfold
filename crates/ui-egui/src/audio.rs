@@ -10,7 +10,7 @@
 //! **A/V sync:** while audio plays, the audio clock drives playback. The clock is the number of
 //! sample frames the device has actually consumed (underruns do not advance it) minus the
 //! device's output latency, mapped through the work-area loop ([`clock_sample`]); the viewer
-//! shows the comp frame at that sample ([`frame_of_sample`]), dropping video frames rather
+//! shows the comp frame at that time ([`AudioPlayback::clock_time`]), dropping video frames rather
 //! than drifting.
 //!
 //! The feed also tracks per-channel peaks for the Audio panel's VU meters ([`Meter`]).
@@ -18,15 +18,18 @@
 //! **Scrubbing:** Ctrl/Cmd-dragging the current-time indicator plays a short snippet of the mix
 //! at each new frame ([`AudioScrub`], `playback.scrubAudio`), as in After Effects.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use effectcraft_engine::project::{ItemId, ItemKind, LayerId, Project};
+use effectcraft_engine::project::{GroupKind, ItemId, ItemKind, Layer, LayerSource, Project, PropGroup};
 use effectcraft_engine::time::{FrameRate, Tick};
 
 use crate::frames::RenderSource;
+
+mod preview_rate;
+use preview_rate::PreviewRate;
 
 /// An audio output (implemented by the native app with cpal).
 pub trait AudioDevice: Send {
@@ -88,7 +91,8 @@ impl AudioFeed {
                 pk[i & 1] = pk[i & 1].max(s.abs());
             }
             real = n;
-            // Keep the count and queue removal atomic relative to live remix invalidation.
+            // Queue removal and the clock advance are one handoff: an edit must not restart
+            // behind samples already handed to the device.
             self.consumed.fetch_add((real / 2) as u64, Ordering::Relaxed);
         }
         out[real..].iter_mut().for_each(|o| *o = 0.0);
@@ -105,6 +109,14 @@ impl AudioFeed {
         if let Ok(mut q) = self.queue.lock() {
             q.clear();
         }
+    }
+
+    /// Discard an old mix and snapshot the first unconsumed frame under the same queue lock
+    /// as [`Self::pull`], so a concurrent device callback cannot leave the cursor behind.
+    fn discard_pending(&self) -> Option<u64> {
+        let mut q = self.queue.lock().ok()?;
+        q.clear();
+        Some(self.consumed())
     }
 
     pub fn push(&self, samples: &[f32]) {
@@ -132,7 +144,7 @@ impl AudioFeed {
     }
 }
 
-/// What a preview plays, in comp sample indices at the device rate.
+/// What a preview plays, in output sample coordinates on its playback timeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlaySpan {
     pub start: i64,
@@ -150,15 +162,23 @@ impl PlaySpan {
     }
 }
 
-/// The comp sample index audible now: `consumed` frames played by the device minus its
+/// The output sample coordinate audible now: `consumed` frames played by the device minus its
 /// `latency`, from the span start, wrapped into the work area when looping (clamped at its end
 /// otherwise).
 pub fn clock_sample(span: &PlaySpan, consumed: u64, latency: u64) -> i64 {
-    let s = span.start + consumed.saturating_sub(latency) as i64;
-    if s < span.wb {
-        return s;
+    // Slow previews can span more output samples than fit in a signed difference. Keep the
+    // elapsed count and loop width wide until the result is back inside the span.
+    let s = i128::from(span.start) + i128::from(consumed.saturating_sub(latency));
+    if s < i128::from(span.wb) {
+        return s as i64;
     }
-    if span.looping { span.wa + (s - span.wb).rem_euclid((span.wb - span.wa).max(1)) } else { span.wb - 1 }
+    if span.looping {
+        let width = (i128::from(span.wb) - i128::from(span.wa)).max(1);
+        let wrapped = i128::from(span.wa) + (s - i128::from(span.wb)).rem_euclid(width);
+        wrapped.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+    } else {
+        span.wb.saturating_sub(1)
+    }
 }
 
 /// Comp time of sample index `s` at `rate` Hz.
@@ -180,65 +200,23 @@ pub struct AudioPlayback {
     device: Box<dyn AudioDevice>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
-    /// wasm32 (no threads): what the feeder thread would own, run by [`AudioPlayback::pump`].
-    feeder: Option<Feeder>,
-    /// Latest mix snapshot. Mixing never holds this lock; only queue publication does.
-    source: Arc<Mutex<Arc<RenderSource>>>,
+    /// What the mixer reads and advances: the feeder thread, or [`AudioPlayback::pump`] on wasm32
+    /// (no threads).
+    state: Arc<Mutex<Feeder>>,
+    comp: ItemId,
+    mix: u32,
     pub rate: u32,
     pub span: PlaySpan,
+    timeline: PreviewRate,
 }
 
+/// The mixer's position and its view of the project.
 struct Feeder {
-    source: Arc<RenderSource>,
-    comp: ItemId,
+    src: RenderSource,
+    /// The next output sample index to mix (mapped to composition time by the preview rate).
     cursor: i64,
-    mix: u32,
-}
-
-impl Feeder {
-    fn block(&mut self, latest: &Mutex<Arc<RenderSource>>, feed: &AudioFeed, span: &PlaySpan, rate: u32) {
-        let source = latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        if !Arc::ptr_eq(&self.source, &source) {
-            self.source = source;
-            // Samples already handed to the device stay there. Replace only the pending tail,
-            // starting at the next unconsumed sample, including across work-area loops.
-            self.cursor = if span.looping {
-                clock_sample(span, feed.consumed(), 0)
-            } else {
-                span.start.saturating_add(i64::try_from(feed.consumed()).unwrap_or(i64::MAX)).min(span.wb)
-            };
-        }
-        let mut cursor = self.cursor;
-        if cursor >= span.wb && span.looping {
-            cursor = span.wa;
-        }
-        let n = span.wb.saturating_sub(cursor).clamp(0, BLOCK as i64) as usize;
-        let samples = if n > 0 { mix_block(&self.source, self.comp, sample_time(cursor, rate), n, rate, self.mix) } else { Vec::new() };
-        let current = latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !Arc::ptr_eq(&self.source, &current) {
-            // An edit arrived while this block was being mixed. Never publish its old sound.
-            return;
-        }
-        if n == 0 {
-            feed.finished.store(true, Ordering::Relaxed);
-        } else {
-            feed.push(&samples);
-            self.cursor = cursor + n as i64;
-        }
-    }
-}
-
-/// Only audio gates trigger a live remix; folding, naming, Video and Lock do not flush sound.
-/// Include every composition so switches inside precomps are picked up too.
-fn audio_switches(project: &Project) -> impl Iterator<Item = (ItemId, LayerId, bool, bool)> + '_ {
-    project
-        .items
-        .iter()
-        .filter_map(|(id, item)| match &item.kind {
-            ItemKind::Comp(c) => Some((*id, c)),
-            _ => None,
-        })
-        .flat_map(|(cid, c)| c.layers.iter().map(move |l| (cid, l.id, l.switches.audio && c.layer_group_audio_enabled(l.id), l.switches.solo)))
+    /// Bumped when the project changes: a block mixed from an older project is dropped.
+    generation: u64,
 }
 
 /// Audio kept queued ahead of the device: ~200 ms (a feeder thread tops it up continuously);
@@ -262,16 +240,33 @@ impl AudioPlayback {
         looping: bool,
         mix_rate: u32,
     ) -> Result<AudioPlayback, String> {
+        Self::start_at_speed(device, src, comp, start, wa, wb, looping, mix_rate, 1.0)
+    }
+
+    /// Start at a preview speed relative to composition time. Both the sound (including pitch)
+    /// and its composition clock follow this speed; the physical device rate stays unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_at_speed(
+        mut device: Box<dyn AudioDevice>,
+        src: RenderSource,
+        comp: ItemId,
+        start: Tick,
+        wa: Tick,
+        wb: Tick,
+        looping: bool,
+        mix_rate: u32,
+        speed: f64,
+    ) -> Result<AudioPlayback, String> {
         let rate = device.sample_rate().max(8000);
         let mix = if mix_rate == 0 { rate } else { mix_rate.clamp(8000, 192_000) };
-        let span = PlaySpan::new(start, wa, wb, looping, rate);
+        let timeline = PreviewRate::new(rate, speed, start)?;
+        let span = timeline.span(start, wa, wb, looping);
         let feed = Arc::new(AudioFeed::default());
         let stop = Arc::new(AtomicBool::new(false));
-        let source = Arc::new(Mutex::new(Arc::new(src)));
-        let feeder = Feeder { source: source.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), comp, cursor: span.start, mix };
+        let state = Arc::new(Mutex::new(Feeder { src, cursor: span.start, generation: 0 }));
         if cfg!(target_arch = "wasm32") {
             // The device takes samples only in `pump`, which fills the queue first.
-            let mut p = AudioPlayback { feed: feed.clone(), device, stop, thread: None, feeder: Some(feeder), source, rate, span };
+            let mut p = AudioPlayback { feed: feed.clone(), device, stop, thread: None, state, comp, mix, rate, span, timeline };
             p.device.start(feed)?;
             p.pump();
             return Ok(p);
@@ -281,15 +276,14 @@ impl AudioPlayback {
         // as that took (#408). The device plays silence until the first block arrives, and the
         // clock doesn't count it.
         let thread = {
-            let (feed, stop, source) = (feed.clone(), stop.clone(), source.clone());
+            let (feed, stop, state) = (feed.clone(), stop.clone(), state.clone());
             std::thread::Builder::new()
                 .name("ec-audio-feed".into())
                 .spawn(move || {
-                    let mut feeder = feeder;
                     let target = queue_target(rate);
                     while !stop.load(Ordering::Relaxed) {
                         if feed.queued_frames() < target && !feed.finished.load(Ordering::Relaxed) {
-                            feeder.block(&source, &feed, &span, rate);
+                            feed_block(&state, comp, &feed, &span, timeline, mix);
                         } else {
                             std::thread::sleep(std::time::Duration::from_millis(4));
                         }
@@ -297,39 +291,64 @@ impl AudioPlayback {
                 })
                 .map_err(|e| e.to_string())?
         };
-        let mut playback = AudioPlayback { feed, device, stop, thread: Some(thread), feeder: None, source, rate, span };
-        playback.device.start(playback.feed.clone())?;
-        Ok(playback)
-    }
-
-    /// Change live layer/group Audio and solo gates without stopping the output or its clock.
-    /// Old queued samples are discarded; an in-flight old block cannot refill the queue.
-    pub fn update_source(&mut self, src: RenderSource) {
-        let previous = self.source.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        if Arc::ptr_eq(&previous.project, &src.project) || audio_switches(&previous.project).eq(audio_switches(&src.project)) {
-            return;
-        }
-        let mut source = self.source.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        *source = Arc::new(src);
-        self.feed.clear();
-        self.feed.finished.store(false, Ordering::Relaxed);
+        device.start(feed.clone())?;
+        Ok(AudioPlayback { feed, device, stop, thread: Some(thread), state, comp, mix, rate, span, timeline })
     }
 
     /// Every UI frame while playing: on wasm32 mix ahead into the feed (what the feeder thread
     /// does elsewhere), then let the device take what it needs.
     pub fn pump(&mut self) {
-        if let Some(feeder) = &mut self.feeder {
+        if cfg!(target_arch = "wasm32") {
             let target = queue_target(self.rate);
             while self.feed.queued_frames() < target && !self.feed.finished.load(Ordering::Relaxed) {
-                feeder.block(&self.source, &self.feed, &self.span, self.rate);
+                feed_block(&self.state, self.comp, &self.feed, &self.span, self.timeline, self.mix);
             }
         }
         self.device.pump();
     }
 
-    /// The comp sample index audible now.
+    /// The project the sound is mixed from.
+    pub fn project(&self) -> Option<Arc<Project>> {
+        self.state.lock().ok().map(|s| s.src.project.clone())
+    }
+
+    /// Mix from `project` from now on (the project was edited while playing, e.g. a layer's Audio
+    /// switch, #2104): what is queued came from the old project, so it is dropped and mixing
+    /// resumes at the first sample the device has not taken yet (also when the feeder had
+    /// already mixed up to the end of a non-looping span).
+    pub fn set_project(&mut self, project: Arc<Project>) {
+        let Ok(mut s) = self.state.lock() else { return };
+        let Some(consumed) = self.feed.discard_pending() else { return };
+        s.src.project = project;
+        s.generation = s.generation.wrapping_add(1);
+        self.feed.finished.store(false, Ordering::Relaxed);
+        // The display clock clamps to the last *audible* sample. A finished non-looping
+        // feeder must instead stay at the exclusive end, never replay that last sample.
+        let next = i128::from(self.span.start) + i128::from(consumed);
+        s.cursor = if !self.span.looping && next >= i128::from(self.span.wb) { self.span.wb } else { clock_sample(&self.span, consumed, 0) };
+    }
+
+    /// Follow an edited `project`: mixing continues from it, and the queued sound is dropped only
+    /// when the edit changed what is heard ([`audio_changed`]); a transform or colour edit leaves
+    /// the queue alone, so playback does not drop out.
+    pub fn follow_project(&mut self, project: Arc<Project>) {
+        let Some(old) = self.project() else { return };
+        if audio_changed(&old, &project, self.comp) {
+            self.set_project(project);
+        } else if let Ok(mut s) = self.state.lock() {
+            s.src.project = project;
+        }
+    }
+
+    /// The comp sample index audible now, expressed at the device's rate.
     pub fn clock(&self) -> i64 {
-        clock_sample(&self.span, self.feed.consumed(), self.device.latency_frames())
+        let sample = clock_sample(&self.span, self.feed.consumed(), self.device.latency_frames());
+        if self.timeline.normal() { sample } else { self.timeline.time(sample).to_units_floor(i64::from(self.rate)) }
+    }
+
+    /// Composition time under the audible output sample, including preview speed and latency.
+    pub fn clock_time(&self) -> Tick {
+        self.timeline.time(clock_sample(&self.span, self.feed.consumed(), self.device.latency_frames()))
     }
 
     pub fn finished(&self) -> bool {
@@ -349,6 +368,105 @@ impl Drop for AudioPlayback {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Whether `new` sounds different from `old` for `comp`: a layer's timing, source, Audio / Solo /
+/// Effects switch, Audio Levels or effects, or the same for a nested comp. Other edits (video
+/// properties, names, labels) do not change the mix unless an audio expression can read them.
+fn audio_changed(old: &Project, new: &Project, comp: ItemId) -> bool {
+    audio_changed_inner(old, new, comp, &mut HashSet::new())
+}
+
+/// Each shared precomp is compared once per depth. A depth limit alone still visits an
+/// exponentially large number of paths in a small graph of reused precomps, blocking the UI.
+fn audio_changed_inner(old: &Project, new: &Project, comp: ItemId, seen: &mut HashSet<(ItemId, usize)>) -> bool {
+    /// Compare one comp and its reachable audio sources, without revisiting a shared path depth.
+    fn comps_differ(old: &Project, new: &Project, comp: ItemId, depth: usize, seen: &mut HashSet<(ItemId, usize)>) -> bool {
+        if depth >= 16 || !seen.insert((comp, depth)) {
+            return false;
+        }
+        let (Some(a), Some(b)) = (old.comp(comp), new.comp(comp)) else { return old.comp(comp).is_some() != new.comp(comp).is_some() };
+        a.layers.len() != b.layers.len()
+            || a.layers.iter().zip(&b.layers).any(|(x, y)| {
+                x.id != y.id
+                    || x.source != y.source
+                    || x.start_time != y.start_time
+                    || x.in_point != y.in_point
+                    || x.out_point != y.out_point
+                    || x.stretch != y.stretch
+                    || x.switches.audio != y.switches.audio
+                    // A folder's Audio switch mutes its layers like their own switch (layer groups).
+                    || a.layer_group_audio_enabled(x.id) != b.layer_group_audio_enabled(y.id)
+                    || x.switches.solo != y.switches.solo
+                    || x.switches.effects != y.switches.effects
+                    || x.props.sub("audio") != y.props.sub("audio")
+                    || audio_effects(x) != audio_effects(y)
+                    || audio_has_expression(x)
+                    || audio_has_expression(y)
+                    || match &x.source {
+                        LayerSource::Footage { item } => footage_differs(old, new, *item),
+                        LayerSource::Comp { item } => comps_differ(old, new, *item, depth + 1, seen),
+                        _ => false,
+                    }
+            })
+    }
+    /// The layer's audio effects (Effect > Audio), the only effects the mixer applies; a video effect
+    /// edit leaves them as they were.
+    fn audio_effects(l: &Layer) -> Vec<&PropGroup> {
+        let is_audio = |g: &&PropGroup| matches!(&g.kind, GroupKind::Effect { effect } if effectcraft_engine::effects::audio_fx::is_audio_effect(effect));
+        l.effects().into_iter().flat_map(|fx| fx.groups()).filter(is_audio).collect()
+    }
+    /// Audio expressions can read any property in any comp (including video-only effects and
+    /// names). Without a complete dependency graph, keeping the old mix would be stale.
+    fn audio_has_expression(l: &Layer) -> bool {
+        l.switches.audio
+            && (l.props.sub("audio").and_then(|g| g.get("levels")).is_some_and(|p| p.has_expression())
+                || (l.switches.effects && audio_effects(l).iter().any(|g| g.enabled && g.props().any(|p| p.has_expression()))))
+    }
+    /// The footage item's audio availability changed (relinked, missing, no audio).
+    fn footage_differs(old: &Project, new: &Project, item: ItemId) -> bool {
+        let f = |p: &Project| match p.item(item).map(|i| &i.kind) {
+            Some(ItemKind::Footage(f)) => Some((f.has_audio, f.missing, f.path.clone())),
+            _ => None,
+        };
+        f(old) != f(new)
+    }
+    comps_differ(old, new, comp, 0, seen)
+}
+
+/// Mix one block at the feeder's cursor into the feed and move the cursor on (wrapping or
+/// finishing at the work-area end). The block is mixed without holding the lock, so a project
+/// change never waits for a slow mix; a block mixed from the old project is dropped.
+fn feed_block(state: &Mutex<Feeder>, comp: ItemId, feed: &AudioFeed, span: &PlaySpan, timeline: PreviewRate, mix: u32) {
+    let Ok((src, mut cursor, generation)) = state.lock().map(|s| (s.src.clone(), s.cursor, s.generation)) else {
+        // Poisoned: nothing more can be mixed.
+        feed.finished.store(true, Ordering::Relaxed);
+        return;
+    };
+    let mut block = None;
+    if cursor >= span.wb && span.looping {
+        cursor = span.wa;
+    }
+    if cursor < span.wb {
+        let n = span.wb.saturating_sub(cursor).clamp(0, BLOCK as i64) as usize;
+        block = Some(if timeline.normal() {
+            mix_block(&src, comp, timeline.time(cursor), n, timeline.rate(), mix)
+        } else {
+            timeline.mix(cursor, n, mix, |t, frames| {
+                effectcraft_engine::render::audio::mix_comp(&src.project, src.footage.as_ref(), src.expr.as_deref(), comp, t, frames, mix)
+            })
+        });
+        cursor += n as i64;
+    }
+    let Ok(mut s) = state.lock() else { return };
+    if s.generation != generation {
+        return;
+    }
+    match block {
+        Some(b) => feed.push(&b),
+        None => feed.finished.store(true, Ordering::Relaxed),
+    }
+    s.cursor = cursor;
 }
 
 /// `n` stereo frames of `comp`'s mix from comp time `t` at the device `rate`, mixed at `mix` Hz
@@ -500,136 +618,6 @@ impl Meter {
 mod tests {
     use super::*;
 
-    struct QuietDevice;
-    impl AudioDevice for QuietDevice {
-        fn sample_rate(&self) -> u32 {
-            8000
-        }
-        fn start(&mut self, _: Arc<AudioFeed>) -> Result<(), String> {
-            Ok(())
-        }
-        fn stop(&mut self) {}
-    }
-
-    #[test]
-    fn live_remix_keeps_sample_position_through_loops_and_non_looping_end() {
-        use effectcraft_engine::Session;
-        use serde_json::json;
-        let mut s = Session::default();
-        s.execute("comp.new", json!({"width":16,"height":16,"duration":3})).unwrap();
-        let id = s.execute("layer.newSolid", json!({"color":"#406080"})).unwrap()["layer"].as_u64().unwrap();
-        s.execute("effect.apply", json!({"layers":[id],"effect":"ec.audio.tone"})).unwrap();
-        let cid = s.active_comp_id().unwrap();
-        let mut app = crate::EffectcraftApp::new(s);
-        let src = app.render_source();
-        let span = PlaySpan { start: 7500, wa: 1600, wb: 8000, looping: true };
-        let source = Arc::new(Mutex::new(Arc::new(src.clone())));
-        let mut playback = AudioPlayback {
-            feed: Arc::new(AudioFeed::default()),
-            device: Box::new(QuietDevice),
-            stop: Arc::new(AtomicBool::new(false)),
-            thread: None,
-            feeder: Some(Feeder { source: source.lock().unwrap().clone(), comp: cid, cursor: span.start, mix: 8000 }),
-            source: source.clone(),
-            rate: 8000,
-            span,
-        };
-        playback.pump();
-        let mut consumed = vec![0.; 1200]; // 600 frames: through the work-area boundary.
-        playback.feed.pull(&mut consumed);
-        assert_eq!(playback.clock(), 1700);
-        let consumed_before = playback.feed.consumed();
-        app.session.execute("layer.setSwitch", json!({"layer":id,"switch":"audio","value":false})).unwrap();
-        playback.update_source(app.render_source());
-        playback.pump();
-        playback.feed.pull(&mut consumed);
-        assert!(consumed.iter().all(|s| *s == 0.));
-        app.session.execute("edit.undo", json!({})).unwrap();
-        playback.update_source(app.render_source());
-        let next = clock_sample(&span, playback.feed.consumed(), 0);
-        playback.pump();
-        playback.feed.pull(&mut consumed);
-        assert_eq!(consumed, mix_block(&src, cid, sample_time(next, 8000), 600, 8000, 8000));
-        assert_eq!(playback.feed.consumed(), consumed_before + 1200);
-        assert_eq!(playback.span, span);
-        // A completed non-looping span must not replay its last sample after a switch.
-        playback.span = PlaySpan { start: 0, wa: 0, wb: playback.feed.consumed() as i64, looping: false };
-        app.session.execute("layer.setSwitch", json!({"layer":id,"switch":"audio","value":false})).unwrap();
-        playback.update_source(app.render_source());
-        playback.pump();
-        assert!(playback.finished());
-        assert_eq!(playback.feed.queued_frames(), 0);
-    }
-
-    #[test]
-    fn live_update_during_slow_mix_discards_the_old_inflight_block() {
-        use effectcraft_engine::color::Label;
-        use effectcraft_engine::project::{Comp, Footage, FootageKind, LayerSource, Project, build};
-        use effectcraft_engine::render::FootageSource;
-        use effectcraft_engine::render::cache::LayerCache;
-        use std::sync::mpsc;
-        use std::time::{Duration, Instant};
-        struct Slow {
-            started: Mutex<Option<mpsc::Sender<()>>>,
-            resume: Mutex<mpsc::Receiver<()>>,
-        }
-        impl FootageSource for Slow {
-            fn frame(&self, _: ItemId, _: &Footage, _: Tick) -> Option<Arc<effectcraft_engine::raster::Image>> {
-                None
-            }
-            fn audio(&self, _: ItemId, _: &Footage, _: Tick, frames: usize, _: u32) -> Option<Vec<f32>> {
-                if let Some(tx) = self.started.lock().unwrap().take() {
-                    tx.send(()).ok()?;
-                    self.resume.lock().unwrap().recv().ok()?;
-                }
-                Some(vec![0.5; frames * 2])
-            }
-        }
-        let mut project = Project::default();
-        let footage = Footage { kind: FootageKind::Audio, has_audio: true, duration: Tick::from_seconds_f64(10.), ..Default::default() };
-        let item = project.add_item("signal", Label::SeaFoam, None, ItemKind::Footage(footage));
-        let mut comp = Comp::new(16, 16, FrameRate::new(30, 1), Tick::from_seconds_f64(3.));
-        let layer = build::layer(&mut project, &comp, "Signal", LayerSource::Footage { item }, (0, 0), None);
-        let lid = layer.id;
-        comp.layers.push(layer);
-        let cid = project.add_item("Comp", Label::Sandstone, None, ItemKind::Comp(comp.into()));
-        let (started, ready) = mpsc::channel();
-        let (resume, wait) = mpsc::channel();
-        let mut src = RenderSource {
-            project: Arc::new(project),
-            footage: Arc::new(Slow { started: Mutex::new(Some(started)), resume: Mutex::new(wait) }),
-            expr: None,
-            layer_cache: Arc::new(LayerCache::default()),
-            gpu: None,
-            gpu_display: false,
-            disk: None,
-        };
-        let mut p = AudioPlayback::start(Box::new(QuietDevice), src.clone(), cid, Tick::ZERO, Tick::ZERO, Tick::from_seconds_f64(3.), true, 0).unwrap();
-        let started = ready.recv_timeout(Duration::from_secs(10));
-        if started.is_err() {
-            let _ = resume.send(());
-        }
-        started.unwrap();
-        let start = Instant::now();
-        // Several edits during the same old mix: the latest request must win.
-        for audio in [false, true, false] {
-            Arc::make_mut(&mut src.project).comp_mut(cid).unwrap().layer_mut(lid).unwrap().switches.audio = audio;
-            p.update_source(src.clone());
-        }
-        let elapsed = start.elapsed();
-        resume.send(()).unwrap();
-        assert!(elapsed < Duration::from_secs(1), "the UI waited for the old mix: {elapsed:?}");
-        while p.feed.queued_frames() < 512 {
-            assert!(start.elapsed() < Duration::from_secs(10));
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        let mut out = [1.; 1024];
-        p.feed.pull(&mut out);
-        assert!(out.iter().all(|s| *s == 0.), "old in-flight sound must not escape after mute");
-        assert_eq!(p.feed.consumed(), 512);
-        assert_eq!(p.clock(), 512);
-    }
-
     #[test]
     fn clock_follows_consumed_frames_and_loops() {
         let span = PlaySpan { start: 4800, wa: 0, wb: 48000, looping: true };
@@ -641,6 +629,13 @@ mod tests {
         assert_eq!(clock_sample(&span, 48000 - 4800 + 100, 0), 100);
         let once = PlaySpan { looping: false, ..span };
         assert_eq!(clock_sample(&once, 100_000, 0), 47999);
+    }
+
+    #[test]
+    fn slow_preview_clocks_do_not_overflow_a_wide_output_span() {
+        let span = PlaySpan { start: 0, wa: i64::MIN, wb: i64::MAX, looping: true };
+        assert_eq!(clock_sample(&span, u64::MAX, 0), 0);
+        assert_eq!(clock_sample(&PlaySpan { looping: false, ..span }, u64::MAX, 0), i64::MAX - 1);
     }
 
     #[test]
@@ -745,6 +740,145 @@ mod tests {
         playback.stop();
     }
 
+    /// #2104: muting a layer while the preview plays silences it: the queued sound is dropped
+    /// and everything mixed afterwards comes from the edited project.
+    #[test]
+    fn muting_a_layer_while_playing_silences_the_preview() {
+        use effectcraft_engine::color::Label;
+        use effectcraft_engine::project::{Comp, Footage, FootageKind, ItemKind, LayerSource, build};
+        use effectcraft_engine::render::FootageSource;
+        use effectcraft_engine::render::cache::LayerCache;
+        use std::time::{Duration, Instant};
+
+        /// Footage audio that is a constant 0.5.
+        struct Steady;
+        impl FootageSource for Steady {
+            fn frame(&self, _: ItemId, _: &Footage, _: Tick) -> Option<Arc<effectcraft_engine::raster::Image>> {
+                None
+            }
+            fn audio(&self, _: ItemId, _: &Footage, _: Tick, frames: usize, _: u32) -> Option<Vec<f32>> {
+                Some(vec![0.5; frames * 2])
+            }
+        }
+        struct Device;
+        impl AudioDevice for Device {
+            fn sample_rate(&self) -> u32 {
+                48000
+            }
+            fn start(&mut self, _: Arc<AudioFeed>) -> Result<(), String> {
+                Ok(())
+            }
+            fn stop(&mut self) {}
+        }
+
+        let mut p = Project::default();
+        let footage =
+            Footage { path: "tone.flac".into(), kind: FootageKind::Audio, duration: Tick::from_seconds_f64(60.0), has_audio: true, ..Default::default() };
+        let item = p.add_item("tone.flac", Label::SeaFoam, None, ItemKind::Footage(footage));
+        let mut comp = Comp::new(64, 36, FrameRate::new(30, 1), Tick::from_seconds_f64(10.0));
+        let layer = build::layer(&mut p, &comp, "tone.flac", LayerSource::Footage { item }, (0, 0), None);
+        comp.layers = vec![layer].into();
+        let cid = p.add_item("Comp", Label::Sandstone, None, ItemKind::Comp(comp.into()));
+        let mut project = Arc::new(p);
+        let src = RenderSource {
+            project: project.clone(),
+            footage: Arc::new(Steady),
+            expr: None,
+            layer_cache: Arc::new(LayerCache::default()),
+            gpu: None,
+            gpu_display: false,
+            disk: None,
+        };
+        let mut playback =
+            AudioPlayback::start(Box::new(Device), src, cid, Tick::ZERO, Tick::ZERO, Tick::from_seconds_f64(10.0), true, 0).expect("the preview starts");
+        let t = Instant::now();
+        while playback.feed.queued_frames() == 0 {
+            assert!(t.elapsed() < Duration::from_secs(30), "the feeder never delivered");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Mute the layer while the sound plays.
+        if let Some(c) = Arc::make_mut(&mut project).comp_mut(cid) {
+            c.layers[0].switches.audio = false;
+        }
+        playback.set_project(project.clone());
+        assert!(playback.project().is_some_and(|p| Arc::ptr_eq(&p, &project)));
+        // The feeder tops the queue up again, now from the muted project.
+        while playback.feed.queued_frames() == 0 {
+            assert!(t.elapsed() < Duration::from_secs(30), "the feeder never delivered");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut out = vec![1.0f32; playback.feed.queued_frames() * 2];
+        playback.feed.pull(&mut out);
+        assert!(out.iter().all(|v| *v == 0.0), "the muted layer still plays");
+        playback.stop();
+    }
+
+    /// #2104: only edits that change the mix drop the queued sound.
+    #[test]
+    fn only_audible_edits_change_the_audio() {
+        use effectcraft_engine::color::Label;
+        use effectcraft_engine::project::{Comp, Footage, FootageKind, build};
+
+        let mut p = Project::default();
+        let footage =
+            Footage { path: "tone.flac".into(), kind: FootageKind::Audio, duration: Tick::from_seconds_f64(60.0), has_audio: true, ..Default::default() };
+        let item = p.add_item("tone.flac", Label::SeaFoam, None, ItemKind::Footage(footage));
+        let mut comp = Comp::new(64, 36, FrameRate::new(30, 1), Tick::from_seconds_f64(10.0));
+        let layer = build::layer(&mut p, &comp, "tone.flac", LayerSource::Footage { item }, (0, 0), None);
+        comp.layers = vec![layer].into();
+        let cid = p.add_item("Comp", Label::Sandstone, None, ItemKind::Comp(comp.into()));
+        let old = p;
+        // A video-only edit: the layer is hidden, its name and label change.
+        let mut video = old.clone();
+        if let Some(l) = video.comp_mut(cid).and_then(|c| c.layers.first_mut()) {
+            l.switches.video = false;
+            l.name = "renamed".into();
+        }
+        assert!(!audio_changed(&old, &video, cid), "a video edit must not drop the sound");
+        // Muting, solo and a moved in point do change it.
+        for edit in 0..3 {
+            let mut edited = old.clone();
+            if let Some(l) = edited.comp_mut(cid).and_then(|c| c.layers.first_mut()) {
+                match edit {
+                    0 => l.switches.audio = false,
+                    1 => l.switches.solo = true,
+                    _ => l.in_point = Tick::from_seconds_f64(1.0),
+                }
+            }
+            assert!(audio_changed(&old, &edited, cid), "audible edit {edit} must be followed");
+        }
+    }
+
+    /// #2104: a video effect edit leaves the mix alone, an audio effect changes it.
+    #[test]
+    fn only_audio_effects_change_the_audio() {
+        use effectcraft_engine::color::Label;
+        use effectcraft_engine::project::build::{self, Ids};
+        use effectcraft_engine::project::{Comp, Footage, FootageKind};
+
+        let mut p = Project::default();
+        let footage =
+            Footage { path: "tone.flac".into(), kind: FootageKind::Audio, duration: Tick::from_seconds_f64(60.0), has_audio: true, ..Default::default() };
+        let item = p.add_item("tone.flac", Label::SeaFoam, None, ItemKind::Footage(footage));
+        let mut comp = Comp::new(64, 36, FrameRate::new(30, 1), Tick::from_seconds_f64(10.0));
+        let layer = build::layer(&mut p, &comp, "tone.flac", LayerSource::Footage { item }, (0, 0), None);
+        comp.layers = vec![layer].into();
+        let cid = p.add_item("Comp", Label::Sandstone, None, ItemKind::Comp(comp.into()));
+        let with_effect = |id: &str| {
+            let mut edited = p.clone();
+            let spec = effectcraft_engine::effects::find(id).expect("the effect exists");
+            let mut next = edited.next_id;
+            let g = effectcraft_engine::effects::instantiate(spec, &mut Ids(&mut next), spec.name, [64.0, 36.0]);
+            edited.next_id = next;
+            if let Some(fx) = edited.comp_mut(cid).and_then(|c| c.layers.first_mut()).and_then(|l| l.props.sub_mut("effects")) {
+                fx.children.push(g.into());
+            }
+            edited
+        };
+        assert!(!audio_changed(&p, &with_effect("ec.blur.gaussian"), cid), "a video effect must not drop the sound");
+        assert!(audio_changed(&p, &with_effect("ec.audio.backwards"), cid), "an audio effect must be followed");
+    }
+
     #[test]
     fn meter_decays_and_holds_peaks() {
         let mut m = Meter::default();
@@ -759,3 +893,7 @@ mod tests {
         assert!(m.peak_db[0] < -10.0, "{}", m.peak_db[0]);
     }
 }
+
+#[cfg(test)]
+#[path = "audio/live_tests.rs"]
+mod live_tests;

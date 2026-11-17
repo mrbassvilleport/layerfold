@@ -136,7 +136,6 @@ impl EffectcraftApp {
     /// Apply the engine events drained this tick: open a comp, show a toast, open a URL, run a frontend command,
     /// purge frame caches or copy an image; command and clipboard failures go to `app.ui.status`.
     pub(crate) fn handle_events(&mut self, ctx: &egui::Context) {
-        let mut project_changed = false;
         for ev in self.session.drain_events() {
             match ev {
                 effectcraft_engine::Event::OpenComp(c) => {
@@ -146,7 +145,7 @@ impl EffectcraftApp {
                 effectcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, self.now)),
                 effectcraft_engine::Event::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
                 // Frames are keyed by content: an edit keeps those of comps it doesn't touch.
-                effectcraft_engine::Event::ProjectChanged { .. } => project_changed = true,
+                effectcraft_engine::Event::ProjectChanged { .. } => {}
                 effectcraft_engine::Event::Frontend { command, params } => {
                     if let Err(e) = crate::menus::frontend(self, ctx, &command, params) {
                         self.ui.status = e;
@@ -162,9 +161,6 @@ impl EffectcraftApp {
                     }
                 }
             }
-        }
-        if project_changed {
-            self.refresh_audio();
         }
     }
 

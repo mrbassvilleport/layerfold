@@ -243,6 +243,26 @@ fn the_rest_of_the_queue_renders_when_one_item_would_replace_footage() {
     assert!(r["items"].as_array().unwrap().iter().any(|i| i["status"] == "Done"), "{r}");
 }
 
+/// The command journal written to a path never replaces footage or the project file.
+#[test]
+fn a_command_journal_is_not_written_over_footage_or_the_project() {
+    let mut f = Fixture::new("journal-over-footage");
+    f.footage("clip.mov");
+    let clip = f.text("clip.mov");
+    for id in ["journal.export", "help.exportRepro"] {
+        let e = f.s.execute(id, json!({"path": clip})).unwrap_err().to_string();
+        assert!(e.contains("clip.mov") && e.contains("footage"), "{id}: {e}");
+        assert_eq!(f.read("clip.mov"), SOURCE, "{id}");
+    }
+    let project = f.text("project.ecproj");
+    f.s.execute("file.saveAs", json!({"path": project})).unwrap();
+    assert!(f.s.execute("journal.export", json!({"path": project})).is_err());
+    assert!(std::fs::read_to_string(f.path("project.ecproj")).unwrap().contains("\"schema\""), "the project file is still a project");
+    let repro = f.text("steps.jsonl");
+    f.s.execute("journal.export", json!({"path": repro})).unwrap();
+    assert!(f.path("steps.jsonl").exists(), "an ordinary path is written");
+}
+
 #[test]
 fn the_project_file_is_never_an_output() {
     let mut f = Fixture::new("project-file");

@@ -31,6 +31,7 @@ pub(crate) mod frame_export;
 mod frontend;
 mod help;
 mod import_project;
+mod journal;
 mod key_labels;
 mod key_transform;
 mod keys_more;
@@ -163,6 +164,7 @@ mod params;
 mod schema;
 
 use super::commands;
+pub use aep::is_aep_path;
 pub use enabled::always;
 pub(crate) use enabled::{has_comp, has_keys, has_layers, has_project_selection, not_yet, not_yet_run};
 #[cfg(test)]
@@ -207,6 +209,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(nav_more::specs());
         v.extend(render_queue::specs());
         v.extend(help::specs());
+        v.extend(journal::specs());
         v.extend(query::specs());
         v.extend(batch::specs());
         v.extend(layer_menu::specs());

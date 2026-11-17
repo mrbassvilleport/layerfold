@@ -580,8 +580,7 @@ fn script_imports_footage_and_saves() {
     std::fs::create_dir_all(&dir).unwrap();
     let q = |n: &str| serde_json::to_string(&dir.join(n).to_string_lossy()).unwrap();
     let mut s = super::session();
-    // The script writes the still it then imports.
-    s.prefs.scripting.allow_scripts_write_files = true;
+    s.execute("prefs.set", json!({"key": "scripting.allowScriptsWriteFiles", "value": true})).unwrap();
     let code = format!(
         r#"
             var c = app.project.items.addComp("Src", 32, 32, 1, 1, 10);

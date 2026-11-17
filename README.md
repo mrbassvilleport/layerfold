@@ -11,7 +11,7 @@
 
 ## What it adds
 
-Layerfold is EffectCraft 0.23.1 with changes to how the timeline works. Compositions, the 308 effects, 3D,
+Layerfold is EffectCraft 0.24.1 with changes to how the timeline works. Compositions, the 308 effects, 3D,
 expressions and export all come from EffectCraft. The animations below were filmed from the program
 itself, with only the cursor and the caption added on top. [CHANGES.md](CHANGES.md) has the full list.
 
@@ -35,7 +35,8 @@ last part differs from After Effects on purpose.
 ### Snapping with Shift
 
 Hold Shift while dragging a layer or a keyframe and its edges snap to the playhead, other layers,
-keyframes and group edges within 8 pixels. A line and a label show what it caught.
+keyframes and group edges within 8 pixels. A line and a label show what it caught. EffectCraft 0.24
+snaps layer bars with Shift as well; group edges and the label are Layerfold's.
 
 ![A layer snapping to the end of another layer](docs/images/demo/snap.gif)
 
@@ -70,7 +71,7 @@ looking across to the layer list.
 
 ### The rest
 
-Audio and solo can be changed during playback. Alt+click picks the active layer of a selection, the
+A group's Audio switch can be changed during playback. Alt+click picks the active layer of a selection, the
 one a new group gathers around. The program installs from an MSI on Windows.
 
 This version leaves a few things out on purpose. It doesn't check for updates, and it has no links to

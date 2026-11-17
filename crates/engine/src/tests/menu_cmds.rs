@@ -1458,6 +1458,32 @@ fn locking_a_folder_mid_drag_ends_the_key_drag() {
     assert_eq!(key_times(&s, a), vec![1.5, 2.0]);
 }
 
+/// A locked folder holds its layers' switches (3D off would drop their rotation keys), alone or
+/// among others; the A/V features (Video, Solo) stay available.
+#[test]
+fn a_locked_folder_holds_its_layers_switches_except_av_features() {
+    let mut s = comp();
+    let a = solid(&mut s, "#ff0000");
+    let b = solid(&mut s, "#00ff00");
+    s.execute("layer.setSwitch", json!({"layers": [a, b], "switch": "3d", "value": true})).unwrap();
+    let group = s.execute("layer.group", json!({"layers": [a]})).unwrap()["group"].as_u64().unwrap();
+    s.execute("layer.groupUpdate", json!({"group": group, "locked": true})).unwrap();
+    assert!(s.execute("layer.setSwitch", json!({"layers": [a], "switch": "3d", "value": false})).is_err());
+    assert!(layer(&s, a).switches.three_d, "the locked layer stays 3D");
+    // Setting `b` apart doesn't reach the locked layer either.
+    s.execute("layer.setSwitch", json!({"layers": [b], "switch": "motionBlur", "others": true, "value": true})).unwrap();
+    assert!(!layer(&s, a).switches.motion_blur, "the locked layer keeps its own Motion Blur");
+    // The Layer menu's Quality, Sampling and Frame Blending (Cmd+U and the like) too.
+    let before = layer(&s, a).switches.clone();
+    assert!(s.execute("layer.quality", json!({"layers": [a], "quality": "wireframe"})).is_err());
+    assert!(s.execute("layer.sampling", json!({"layers": [a], "sampling": "bicubic"})).is_err());
+    assert!(s.execute("layer.frameBlending", json!({"layers": [a], "mode": "frameMix"})).is_err());
+    assert_eq!(layer(&s, a).switches, before, "the menu commands left the locked layer alone");
+    s.execute("layer.setSwitch", json!({"layers": [a], "switch": "video", "value": false})).unwrap();
+    s.execute("layer.setSwitch", json!({"layers": [a], "switch": "solo", "value": true})).unwrap();
+    assert!(!layer(&s, a).switches.video && layer(&s, a).switches.solo, "Video and Solo still work");
+}
+
 /// Like key drags, a layer-bar Quick Offset drag ends when its folder is locked under its merge key.
 #[test]
 fn locking_a_folder_mid_drag_ends_the_layer_quick_offset() {

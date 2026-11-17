@@ -132,4 +132,10 @@ configuration from these Apache-2.0 projects:
 - `crates/segment/src/mobilesam.rs` follows the MobileSAM, TinyViT and Segment Anything
   architectures and their Apache-2.0 reference code.
 
+## Frozen matte regression fixture
+
+| Asset | Author | Source | Licence |
+|---|---|---|---|
+| `crates/engine/src/tests/fixtures/object-matte-0.22.ecproj` | lisn0 | Original work, synthetic project saved by EffectCraft 0.22.0 | MIT OR Apache-2.0 |
+
 - Appearance theme previews, drawn procedurally from original shapes: `crates/ui-egui/src/panels/settings.rs` (original work, MIT OR Apache-2.0).

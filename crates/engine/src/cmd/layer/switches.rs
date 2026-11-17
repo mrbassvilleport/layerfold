@@ -11,6 +11,9 @@ pub(super) fn set_switch(s: &mut Session, p: &Value) -> Result<Value> {
     if b_p(p, "others") == Some(true) {
         return set_switch_others(s, cid, &ids, &name, v, &label);
     }
+    // A locked folder protects its layers' switches (3D off drops rotation keys, for one); the
+    // A/V features stay available: hiding, muting or soloing a layer doesn't edit it.
+    let ids = if av_feature(&name) { ids } else { group_unlocked(s, cid, ids, "layer.setSwitch")? };
     // `merge`: a switch dragged over several layers in the Timeline is one undo step.
     let r = s.edit(&label, merge_p(p), |proj, _| {
         let comp = proj.comp_mut(cid).ok_or(EngineError::NoComp)?;
@@ -49,6 +52,9 @@ fn set_switch_others(s: &mut Session, cid: ItemId, ids: &[LayerId], name: &str, 
             "video" | "eye" => !mattes.contains(&l.id),
             _ => l.source.is_av() && !mattes.contains(&l.id),
         };
+        // Other layers in a locked folder keep their switches, apart from the A/V features.
+        let held: Vec<LayerId> = if av_feature(name) { Vec::new() } else { comp.layers.iter().filter(|l| locked_by_group(comp, l.id)).map(|l| l.id).collect() };
+        let applies = |l: &Layer| applies(l) && !held.contains(&l.id);
         let mut alone = true;
         for l in comp.layers.iter().filter(|l| applies(l)) {
             let Some(on) = switch_value(l, name) else { return Err(bad("layer.setSwitch", format!("unknown switch `{name}`"))) };
@@ -62,6 +68,11 @@ fn set_switch_others(s: &mut Session, cid: ItemId, ids: &[LayerId], name: &str, 
         Ok(others)
     })?;
     Ok(json!(r))
+}
+
+/// The A/V features column (Video, Audio, Solo, Lock), which a locked folder doesn't hold.
+fn av_feature(name: &str) -> bool {
+    matches!(name, "video" | "eye" | "audio" | "solo" | "lock" | "locked")
 }
 
 fn switch_value(l: &Layer, name: &str) -> Option<bool> {
