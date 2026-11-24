@@ -101,7 +101,7 @@ reproduce an image (for example, point lists traced from someone else's icon).
 
 ## 3. Engineering rules
 
-- **Pure Rust.** Media codecs come from FilmCraft crates, as git dependencies behind `crates/media`.
+- **Pure Rust.** Media codecs and containers come from the shared craft-libs crates, as git dependencies behind `crates/media`.
 - **Layering** (`cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd/cpal; L0–L4
   build for wasm32.
 - **Exact time:** `effectcraft_time::Tick` (254 016 000 000/s). Keyframe times are layer time.

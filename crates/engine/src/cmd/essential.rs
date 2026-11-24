@@ -885,16 +885,18 @@ pub fn read_template(bytes: &[u8]) -> std::result::Result<(Value, Project, Vec<(
     let entries = effectcraft_lottie::zip::read_stored(bytes);
     let get = |n: &str| entries.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
     let manifest: Value =
-        serde_json::from_slice(&get("manifest.json").ok_or("not an Layerfold template (no manifest.json)")?).map_err(|e| format!("manifest.json: {e}"))?;
+        serde_json::from_slice(&get("manifest.json").ok_or("not a Layerfold template (no manifest.json)")?).map_err(|e| format!("manifest.json: {e}"))?;
     if manifest.get("format").and_then(Value::as_str) != Some(TEMPLATE_FORMAT) {
-        return Err("not an Layerfold template".into());
+        return Err("not a Layerfold template".into());
     }
     if manifest.get("version").and_then(Value::as_u64).unwrap_or(0) > TEMPLATE_VERSION as u64 {
         return Err("the template was made by a newer Layerfold".into());
     }
     let text = String::from_utf8(get("project.ecproj").ok_or("template has no project.ecproj")?).map_err(|e| e.to_string())?;
     let mut project = Project::from_json(&text).map_err(|e| e.to_string())?;
-    crate::upgrade_effects(&mut project);
+    // (channel selection can't be animated, as in After Effects: a template made before that
+    // keeps its first value; read for listings and thumbnails too, so not said each time)
+    let _static_channels = crate::upgrade_effects(&mut project);
     Ok((manifest, project, entries))
 }
 

@@ -1,7 +1,7 @@
 # What Layerfold changes in EffectCraft
 
-Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.24.1, tag `v0.24.1`,
-commit `582344dd4ef462362c02e56e3094de7af01847ab`. This file lists how it differs. It also serves as
+Layerfold is based on [EffectCraft](https://github.com/storytold/effectcraft) 0.25.1, tag `v0.25.1`,
+commit `f5ce0dc56803a47ea9e483f400ab1c24426caa50`. This file lists how it differs. It also serves as
 the notice of modified files that the Apache-2.0 license asks for. To see every changed line, compare
 this repository with that tag. Most of the changes are in `crates/ui-egui/`, `crates/engine/`,
 `crates/project/` and `editor/`.

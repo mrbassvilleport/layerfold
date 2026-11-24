@@ -79,9 +79,10 @@ BlendingMode.SILHOUETTE_ALPHA = BlendingMode.SILHOUETE_ALPHA;
 var KeyframeInterpolationType = __enum("KeyframeInterpolationType", ["LINEAR", "BEZIER", "HOLD"], 6612);
 var TrackMatteType = __enum("TrackMatteType", ["NO_TRACK_MATTE", "ALPHA", "ALPHA_INVERTED", "LUMA", "LUMA_INVERTED"], 5012);
 var LightType = __enum("LightType", ["PARALLEL", "SPOT", "POINT", "AMBIENT", "ENVIRONMENT"], 4412);
+// In After Effects' order and numbers (26.3): right comes before centre.
 var ParagraphJustification = __enum("ParagraphJustification", [
-  "LEFT_JUSTIFY", "CENTER_JUSTIFY", "RIGHT_JUSTIFY", "FULL_JUSTIFY_LASTLINE_LEFT", "FULL_JUSTIFY_LASTLINE_CENTER",
-  "FULL_JUSTIFY_LASTLINE_RIGHT", "FULL_JUSTIFY_LASTLINE_FULL", "MULTIPLE_JUSTIFICATIONS"], 7413);
+  "MULTIPLE_JUSTIFICATIONS", "LEFT_JUSTIFY", "RIGHT_JUSTIFY", "CENTER_JUSTIFY", "FULL_JUSTIFY_LASTLINE_LEFT",
+  "FULL_JUSTIFY_LASTLINE_RIGHT", "FULL_JUSTIFY_LASTLINE_CENTER", "FULL_JUSTIFY_LASTLINE_FULL"], 7412);
 var PropertyValueType = __enum("PropertyValueType", [
   "NO_VALUE", "ThreeD_SPATIAL", "ThreeD", "TwoD_SPATIAL", "TwoD", "OneD", "COLOR", "CUSTOM_VALUE", "MARKER",
   "LAYER_INDEX", "MASK_INDEX", "SHAPE", "TEXT_DOCUMENT"], 6412);
@@ -120,7 +121,14 @@ function __blendLabel(v) {
 var __interpKey = { 6612: "linear", 6613: "bezier", 6614: "hold" };
 var __matteKind = { 5013: "alpha", 5014: "alphaInverted", 5015: "luma", 5016: "lumaInverted" };
 var __matteEnum = { Alpha: 5013, AlphaInverted: 5014, Luma: 5015, LumaInverted: 5016 };
-var __justKey = { 7413: "left", 7414: "center", 7415: "right", 7416: "justifyLeft", 7417: "justifyCenter", 7418: "justifyRight", 7419: "justifyAll" };
+var __justKey = {};
+__justKey[ParagraphJustification.LEFT_JUSTIFY] = "left";
+__justKey[ParagraphJustification.CENTER_JUSTIFY] = "center";
+__justKey[ParagraphJustification.RIGHT_JUSTIFY] = "right";
+__justKey[ParagraphJustification.FULL_JUSTIFY_LASTLINE_LEFT] = "justifyLeft";
+__justKey[ParagraphJustification.FULL_JUSTIFY_LASTLINE_CENTER] = "justifyCenter";
+__justKey[ParagraphJustification.FULL_JUSTIFY_LASTLINE_RIGHT] = "justifyRight";
+__justKey[ParagraphJustification.FULL_JUSTIFY_LASTLINE_FULL] = "justifyAll";
 
 // ------------------------------------------------------------------ output, $ and dialogs
 
@@ -279,11 +287,23 @@ File.prototype = {
   copy: function (to) { return JSON.parse(__file("copy", this.__path, __str(to))); },
   rename: function () { throw __err("File.rename is not supported"); },
   execute: function () { return JSON.parse(__file("execute", this.__path)); },
-  openDlg: function () { return null; },
-  saveDlg: function () { return null; },
+  openDlg: function (prompt, filter, multiSelect) { return __pickFile("open", prompt, filter, multiSelect, this.__path); },
+  saveDlg: function (prompt, filter) { return __pickFile("save", prompt, filter, false, this.__path); },
 };
-File.openDialog = function () { return null; };
-File.saveDialog = function () { return null; };
+// The app's file dialog (#2778): a File (an array of them with multiSelect), a Folder for
+// "folder", or null when cancelled, and where no dialog can be shown (the Script Console, the
+// web, headless runs). Filters are strings ("*.jsx", "Audio:*.mp3;*.wav"); a function (macOS)
+// offers every file.
+function __pickFile(kind, prompt, filter, multiSelect, start) {
+  var opt = function (v) { return v === undefined || v === null ? null : __str(v); };
+  var r = JSON.parse(__fileDialog(kind, opt(prompt), typeof filter === "string" ? filter : null, !!multiSelect, opt(start)));
+  if (!r || !r.length) return null;
+  if (kind === "folder") return new Folder(r[0]);
+  if (kind === "open" && multiSelect) return r.map(function (p) { return new File(p); });
+  return new File(r[0]);
+}
+File.openDialog = function (prompt, filter, multiSelect) { return __pickFile("open", prompt, filter, multiSelect); };
+File.saveDialog = function (prompt, filter) { return __pickFile("save", prompt, filter, false); };
 File.decode = function (s) { return decodeURIComponent(s); };
 File.encode = function (s) { return encodeURIComponent(s); };
 File.fs = "EffectCraft";
@@ -346,9 +366,9 @@ Folder.prototype = {
     }
     return out;
   },
-  selectDlg: function () { return null; },
+  selectDlg: function (prompt) { return __pickFile("folder", prompt, null, false, this.__path); },
 };
-Folder.selectDialog = function () { return null; };
+Folder.selectDialog = function (prompt) { return __pickFile("folder", prompt, null, false); };
 Object.defineProperty(Folder, "current", { get: function () { var d = __get("app").projectDir; return d ? new Folder(d) : null; } });
 Object.defineProperty(Folder, "temp", { get: function () { return null; } });
 Object.defineProperty(Folder, "desktop", { get: function () { return null; } });
@@ -653,8 +673,44 @@ TextDocument.prototype = {
 function __propOf(layer, info) {
   if (!info) return null;
   if (info.isLayer) return layer;
+  if (info.marker) return layer.marker;
+  if (info.absent) return __absentGroup(layer, info);
   if (info.kind === "group") return info.isMask ? new MaskPropertyGroup(layer, info.uid) : new PropertyGroup(layer, info.uid);
   return new Property(layer, info.uid);
+}
+
+// A top-level slot After Effects always has and this layer does not use yet (Layer Styles before
+// any style, Data, Sets…): an empty group, so loops over `numProperties` meet no null.
+function __absentGroup(layer, info) {
+  var g = {
+    __kind: "PropertyGroup",
+    get name() { return info.name; },
+    get matchName() { return info.matchName; },
+    get propertyIndex() { return info.index; },
+    get propertyDepth() { return 1; },
+    get propertyType() { return PropertyType.NAMED_GROUP; },
+    get parentProperty() { return layer; },
+    get numProperties() { return 0; },
+    get enabled() { return true; },
+    get active() { return layer.enabled; },
+    get canSetEnabled() { return false; },
+    get isModified() { return false; },
+    get isEffect() { return false; },
+    get isMask() { return false; },
+    get elided() { return false; },
+    get selected() { return false; },
+    property: function () { return null; },
+    propertyGroup: function (n) { return n === undefined || n === 1 ? layer : null; },
+    canAddProperty: function () { return false; },
+    addProperty: function (n) { throw __err("Can not add \"" + n + "\" to \"" + info.name + "\""); },
+    toString: function () { return "[object PropertyGroup]"; },
+  };
+  // Callable like any group: `layer.property(7)(1)` is `.property(1)`, null.
+  var f = function (k) { return g.property(k); };
+  delete f.name;
+  delete f.length;
+  for (const k of Object.getOwnPropertyNames(g)) Object.defineProperty(f, k, Object.getOwnPropertyDescriptor(g, k));
+  return f;
 }
 
 function PropertyBase() {}
@@ -824,8 +880,8 @@ Property.prototype.property = function () { return null; };
     __call("prop.setExpression", this.__ref({ enabled: !!v }));
   });
   def("expressionError", function () {
-    var e = this.expression;
-    return e ? __get("exprError", { code: e }) : "";
+    // Evaluated at the comp's current time, so a runtime error or a non-finite result shows too.
+    return this.expression ? __get("exprError", { comp: this.__layer.__comp, layer: this.__layer.__id, uid: this.__uid }) : "";
   });
   def("canSetExpression", function () { return !!this.__info().canSetExpression; });
   def("canVaryOverTime", function () { return !!this.__info().canVaryOverTime; });
